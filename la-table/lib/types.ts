@@ -46,10 +46,12 @@ export interface Staple {
   id: string
   user_id: string
   name: string
+  emoji: string
   brand: string | null
   quantity: number | null
   unit: string | null
   substitute: string | null
+  category: string
   always_add: boolean
   sort_order: number
 }
@@ -110,10 +112,12 @@ export interface RecipeFormValues {
 }
 
 export interface StapleFormValues {
+  emoji: string
   name: string
   brand: string
   quantity: number | ''
   unit: string
   substitute: string
+  category: string
   always_add: boolean
 }
