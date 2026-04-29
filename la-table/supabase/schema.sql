@@ -114,6 +114,14 @@ alter table staples        enable row level security;
 alter table meal_history   enable row level security;
 alter table cart_sessions  enable row level security;
 
+-- Drop before recreating (idempotent)
+drop policy if exists "Users manage own recipes"                on recipes;
+drop policy if exists "Users manage ingredients of own recipes" on ingredients;
+drop policy if exists "Users manage own planning"               on weekly_planning;
+drop policy if exists "Users manage own staples"                on staples;
+drop policy if exists "Users manage own history"                on meal_history;
+drop policy if exists "Users manage own cart"                   on cart_sessions;
+
 -- Recipes
 create policy "Users manage own recipes"
   on recipes for all
