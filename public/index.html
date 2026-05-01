@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#2D6A4F" />
+  <meta name="description" content="Planificateur repas familial" />
+  <title>Carter</title>
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" href="/icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="app-header">
+      <h1 class="app-title">Carter</h1>
+      <span id="week-label" class="week-label"></span>
+    </header>
+    <main id="view" class="view"></main>
+    <nav class="tab-bar">
+      <button class="tab active" data-tab="menu">
+        <span class="tab-icon">🗓</span>
+        <span class="tab-label">Menu</span>
+      </button>
+      <button class="tab" data-tab="courses">
+        <span class="tab-icon">🛒</span>
+        <span class="tab-label">Courses</span>
+      </button>
+      <button class="tab" data-tab="recettes">
+        <span class="tab-icon">🍳</span>
+        <span class="tab-label">Recettes</span>
+      </button>
+    </nav>
+  </div>
+
+  <div id="modal" class="modal-overlay hidden">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 id="modal-title">Choisir une recette</h3>
+        <button id="modal-close" class="btn-icon-sm">✕</button>
+      </div>
+      <input type="search" id="modal-search" class="search-input" placeholder="Rechercher…" />
+      <div id="modal-list" class="modal-list"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
