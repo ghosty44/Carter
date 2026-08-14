@@ -21,3 +21,11 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Carter
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/backups/
+packages/*/dist/
+*.tsbuildinfo

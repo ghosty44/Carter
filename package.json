@@ -1,0 +1,27 @@
+{
+  "name": "carter",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Gestion et synchronisation d'un plan d'entrainement de trail",
+  "type": "module",
+  "workspaces": [
+    "packages/shared",
+    "packages/server",
+    "packages/web"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "npm run build -w @carter/shared && npm run build -w @carter/server && npm run build -w @carter/web",
+    "dev": "npm run dev -w @carter/server",
+    "dev:web": "npm run dev -w @carter/web",
+    "start": "npm run start -w @carter/server",
+    "test": "npm run test -w @carter/server",
+    "test:watch": "npm run test:watch -w @carter/server",
+    "typecheck": "tsc -b --pretty"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}
