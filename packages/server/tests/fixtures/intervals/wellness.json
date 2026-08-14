@@ -1,0 +1,25 @@
+[
+  {
+    "id": "2026-03-03",
+    "weight": 72.4,
+    "restingHR": 48,
+    "hrv": 68.2,
+    "sleepSecs": 27000,
+    "fatigue": 2,
+    "mood": 4,
+    "comments": "Bonne nuit"
+  },
+  {
+    "id": "2026-03-04",
+    "restingHR": 51,
+    "sleepSecs": 21600,
+    "fatigue": 3
+  },
+  {
+    "id": "2026-03-05",
+    "weight": null,
+    "restingHR": null,
+    "fatigue": 9,
+    "mood": 0
+  }
+]
