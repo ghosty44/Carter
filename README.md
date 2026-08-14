@@ -36,12 +36,17 @@ redescendent sur la montre sans acces partenaire.
 
 ## Demarrage
 
+L'app a besoin d'une base Postgres. Cree-en une gratuitement sur
+[Neon](https://neon.tech) (ou utilise un Postgres local), puis :
+
 ```bash
 npm install
-cp .env.example .env          # puis remplis les valeurs
+cp .env.example .env          # renseigne au moins DATABASE_URL
 npm run build
 npm start                     # http://localhost:8787
 ```
+
+Les migrations sont appliquees automatiquement au demarrage.
 
 En developpement, deux terminaux :
 
@@ -49,9 +54,6 @@ En developpement, deux terminaux :
 npm run dev        # backend, port 8787
 npm run dev:web    # frontend Vite, port 5173, proxy /api vers 8787
 ```
-
-Lance toujours le serveur depuis la racine du depot : `DATABASE_PATH` est
-relatif au repertoire courant.
 
 ### Charger le plan initial
 
@@ -171,10 +173,13 @@ Par ailleurs :
   autres ; l'ecran de resultat propose de rejouer uniquement les echecs ;
 - **limitation de debit** : file sequentielle, delai reglable entre requetes,
   backoff exponentiel sur 429 et 5xx, aucun retry sur les erreurs definitives ;
-- **sauvegarde** : la base est copiee avant chaque synchro et avant chaque
-  import de plan revise, dans `data/backups/` (30 dernieres conservees) ;
+- **sauvegarde** : un instantane du plan et de son historique est pris avant
+  chaque synchro et chaque import de plan revise (30 derniers conserves) ;
 - **revalidation** : un apercu affiche hier soir et confirme ce matin est
-  reverifie operation par operation avant envoi.
+  reverifie operation par operation avant envoi ;
+- **budget de temps** : sur une plateforme qui tue les fonctions apres un
+  delai fixe, le moteur s'arrete avant la coupure et annonce ce qui reste,
+  plutot que de se faire interrompre au milieu d'une requete.
 
 ### Quels types sont synchronises
 
@@ -233,26 +238,98 @@ message indique la semaine de reference quand ce n'est pas la precedente.
 
 ---
 
-## Deploiement en ligne
+## Deploiement sur Vercel
 
-L'app est prevue pour un petit hebergement prive, accessible depuis le
-telephone.
+### 1. Base de donnees
+
+Depuis le tableau de bord Vercel : **Storage > Create Database > Neon
+(Postgres)**, puis rattache-la au projet. Vercel injecte `DATABASE_URL` dans
+les variables d'environnement — rien a copier a la main.
+
+Si tu crees la base directement chez Neon, prends l'URL **poolee** (elle
+contient `-pooler`) et ajoute-la en variable `DATABASE_URL`.
+
+### 2. Variables d'environnement
+
+Dans **Settings > Environment Variables**, pour l'environnement Production :
+
+| Variable | Valeur |
+| --- | --- |
+| `DATABASE_URL` | injectee par l'integration Neon |
+| `APP_PASSWORD` | une phrase longue, c'est ta porte d'entree |
+| `SESSION_SECRET` | `openssl rand -hex 32` |
+| `NODE_ENV` | `production` |
+| `INTERVALS_ATHLETE_ID` | ton identifiant, format `i123456` |
+| `INTERVALS_API_KEY` | ta cle personnelle |
 
 **La protection d'acces n'est pas optionnelle.** Sans elle, ton plan, tes
 douleurs et tes donnees de sommeil sont lisibles par qui trouve l'URL. En
-`NODE_ENV=production`, le serveur **refuse de demarrer** sans `APP_PASSWORD` et
+`NODE_ENV=production`, le serveur **refuse de demarrer** sans `APP_PASSWORD` ni
 `SESSION_SECRET`.
 
+### 3. Deployer
+
 ```bash
-openssl rand -hex 32     # SESSION_SECRET
+npm i -g vercel
+vercel link
+vercel --prod
 ```
 
-- sers l'app derriere HTTPS : le cookie de session est marque `secure` en
-  production ;
-- monte un volume persistant sur le dossier de `DATABASE_PATH` — le conteneur
-  est ephemere, pas la base ;
-- aucune cle API n'est presente dans le bundle frontend : le navigateur
-  n'appelle que le backend Carter.
+Le premier deploiement applique les migrations tout seul, au premier appel
+d'API. Ouvre ensuite l'app et importe `data/plan-bloc1.json`.
+
+### Comment c'est cable
+
+`vercel.json` decrit tout :
+
+- **frontend** : `packages/web/dist`, servi en statique par Vercel, sans
+  reveiller de fonction ;
+- **backend** : `api/[...path].ts`, une fonction unique qui monte l'app Fastify
+  entiere. Le fichier est un catch-all pour que le chemin d'origine arrive
+  intact a Fastify ;
+- **fallback** : toute route non-`/api/` renvoie `index.html` ;
+- **`maxDuration: 60`** sur la fonction, parce qu'une premiere synchro est
+  longue (voir ci-dessous).
+
+L'app Fastify est construite une fois par instance et gardee chaude entre
+invocations : les migrations et l'ouverture du pool ne sont pas rejouees a
+chaque requete.
+
+### La premiere synchro peut demander deux passes
+
+Une fonction serverless est tuee au bout d'un delai fixe. Une premiere synchro
+du bloc 1 represente une trentaine d'operations, chacune avec un appel reseau
+vers Intervals.icu et un delai anti-429 : on peut depasser la minute.
+
+Le moteur ne se laisse pas couper au milieu. Il travaille avec un budget de
+temps (`SYNC_BUDGET_MS`, 45 s par defaut) et **n'entame pas** une operation
+au-dela. Ce qui n'a pas ete tente n'a rien ecrit : l'ecran affiche
+« interrompu, N operations non tentees », et le bouton « Recalculer et
+reprendre ce qui reste » termine le travail.
+
+Si tu preferes tout faire d'un coup, baisse temporairement
+`SYNC_WINDOW_WEEKS` a 2 ou 3, synchronise, puis remonte-le.
+
+### Autres hebergeurs
+
+Le serveur est un Fastify ordinaire (`npm start`). Sur Fly.io, Railway ou
+Render, il tourne sans modification : seule `DATABASE_URL` est requise. Sers-le
+derriere HTTPS — le cookie de session est marque `secure` en production.
+
+Aucune cle API n'est presente dans le bundle frontend : le navigateur n'appelle
+que le backend Carter.
+
+### Sauvegardes
+
+La sauvegarde d'avant-operation existe toujours, sous une autre forme : au lieu
+d'une copie du fichier SQLite, c'est un instantane JSON du plan et de son
+historique, ecrit dans la table `sauvegarde` avant chaque synchro, import coach
+ou restauration. Les 30 derniers sont conserves.
+
+Le choix de ne sauvegarder que le plan est deliberé : c'est la seule donnee non
+reconstructible. Les activites et le wellness se reimportent depuis
+Intervals.icu, et les dupliquer a chaque synchro ferait gonfler la base sans
+rien apporter. Neon fournit par ailleurs sa propre restauration dans le temps.
 
 ---
 
@@ -290,11 +367,13 @@ calendrier (le deplacement se fait en editant le plan), import de fichiers
 ## Architecture
 
 ```
+api/        fonction Vercel : monte l'app Fastify
 packages/
   shared/   types, schemas Zod, hash de contenu, projection du plan en dates
-  server/   Fastify + SQLite, providers, moteur de synchro, exports
+  server/   Fastify + Postgres, providers, moteur de synchro, exports
   web/      React + Vite, mobile d'abord
-data/       plan-bloc1.json, base SQLite, sauvegardes
+data/       plan-bloc1.json
+vercel.json configuration du deploiement
 ```
 
 **Regle structurante** : rien en dehors de `packages/server/src/providers/` ne
@@ -315,8 +394,20 @@ wellness, correspondances, journal.
 npm test
 ```
 
-93 tests. Le moteur de diff et de synchro est couvert, suppressions, reprises
-sur erreur, conflits et apercus perimes compris. Les adaptateurs sont testes
-contre des reponses enregistrees, jamais contre l'API en direct : une suite qui
-depend du reseau echoue pour des raisons etrangeres au code, et ne dit rien
-d'utile quand elle passe.
+96 tests sans base. Le moteur de diff et de synchro est couvert : suppressions,
+reprises sur erreur, conflits, apercus perimes, et arret sur budget de temps.
+Les adaptateurs sont testes contre des reponses enregistrees, jamais contre
+l'API en direct — une suite qui depend du reseau echoue pour des raisons
+etrangeres au code, et ne dit rien d'utile quand elle passe.
+
+11 tests supplementaires couvrent la couche Postgres et ne s'executent que si
+`TEST_DATABASE_URL` est renseignee :
+
+```bash
+TEST_DATABASE_URL=postgres://user@localhost:5432/carter_test npm test
+```
+
+Ils verifient les migrations, la concurrence sur les numeros de version, la
+non-duplication des activites reimportees et la fusion du wellness.
+**Ces tests effacent le schema `public`** : ne les pointe jamais sur ta vraie
+base.

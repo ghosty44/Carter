@@ -19,9 +19,11 @@
     "start": "npm run start -w @carter/server",
     "test": "npm run test -w @carter/server",
     "test:watch": "npm run test:watch -w @carter/server",
-    "typecheck": "tsc -b --pretty"
+    "typecheck": "tsc -b --pretty",
+    "build:vercel": "npm run build -w @carter/shared && npm run build -w @carter/server && npm run build -w @carter/web"
   },
   "devDependencies": {
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "@vercel/node": "^3.2.24"
   }
 }

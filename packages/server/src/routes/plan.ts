@@ -14,7 +14,7 @@ import { ErreurHttp, planRequis, type Contexte } from './contexte.js';
 export function routesPlan(app: FastifyInstance, ctx: Contexte): void {
   /** Le plan courant, avec tout ce que l'interface affiche autour. */
   app.get('/api/plan', async () => {
-    const plan = ctx.plans.courant();
+    const plan = await ctx.plans.courant();
     if (plan === null) return { plan: null, volumes: [], seances: [], alertes: [] };
 
     const today = aujourdhui();
@@ -26,8 +26,8 @@ export function routesPlan(app: FastifyInstance, ctx: Contexte): void {
       seances: seancesPlanifiees(plan),
       alertes: calculerAlertes({
         plan,
-        realisees: ctx.realise.surPeriode(debut, today),
-        wellness: ctx.wellness.surPeriode(debut, today),
+        realisees: await ctx.realise.surPeriode(debut, today),
+        wellness: await ctx.wellness.surPeriode(debut, today),
         today,
       }),
     };
@@ -54,10 +54,10 @@ export function routesPlan(app: FastifyInstance, ctx: Contexte): void {
       throw new ErreurHttp(422, 'Le plan est incoherent', { erreurs: incoherences });
     }
 
-    const existant = ctx.plans.courant();
+    const existant = await ctx.plans.courant();
     const diff = existant === null ? null : diffPlans(existant, parse.data);
 
-    const enregistre = ctx.plans.enregistrer(parse.data, existant === null ? 'INITIAL' : 'IMPORT');
+    const enregistre = await ctx.plans.enregistrer(parse.data, existant === null ? 'INITIAL' : 'IMPORT');
 
     return {
       plan: enregistre,
@@ -83,30 +83,30 @@ export function routesPlan(app: FastifyInstance, ctx: Contexte): void {
       throw new ErreurHttp(422, 'Plan incoherent', { erreurs: incoherences });
     }
 
-    return { plan: ctx.plans.enregistrer(parse.data, 'EDITION') };
+    return { plan: await ctx.plans.enregistrer(parse.data, 'EDITION') };
   });
 
   app.get('/api/plan/versions', async () => {
-    const plan = planRequis(ctx);
-    return { versions: ctx.plans.versions(plan.id) };
+    const plan = await planRequis(ctx);
+    return { versions: await ctx.plans.versions(plan.id) };
   });
 
   app.get<{ Params: { version: string } }>('/api/plan/versions/:version', async (requete) => {
-    const plan = planRequis(ctx);
-    const version = ctx.plans.versionPrecise(plan.id, Number(requete.params.version));
+    const plan = await planRequis(ctx);
+    const version = await ctx.plans.versionPrecise(plan.id, Number(requete.params.version));
     if (version === null) throw new ErreurHttp(404, 'Version introuvable');
     return { plan: version };
   });
 
   /** Diff entre deux versions, ou entre une version et le plan courant. */
   app.get<{ Querystring: { a?: string; b?: string } }>('/api/plan/diff', async (requete) => {
-    const plan = planRequis(ctx);
+    const plan = await planRequis(ctx);
 
     const a = requete.query.a
-      ? ctx.plans.versionPrecise(plan.id, Number(requete.query.a))
+      ? await ctx.plans.versionPrecise(plan.id, Number(requete.query.a))
       : null;
     const b = requete.query.b
-      ? ctx.plans.versionPrecise(plan.id, Number(requete.query.b))
+      ? await ctx.plans.versionPrecise(plan.id, Number(requete.query.b))
       : plan;
 
     if (a === null || b === null) {
@@ -125,13 +125,13 @@ export function routesPlan(app: FastifyInstance, ctx: Contexte): void {
   app.post<{ Params: { version: string } }>(
     '/api/plan/versions/:version/restaurer',
     async (requete) => {
-      const courant = planRequis(ctx);
-      const cible = ctx.plans.versionPrecise(courant.id, Number(requete.params.version));
+      const courant = await planRequis(ctx);
+      const cible = await ctx.plans.versionPrecise(courant.id, Number(requete.params.version));
       if (cible === null) throw new ErreurHttp(404, 'Version introuvable');
 
-      sauvegarder(ctx.db, ctx.config.DATABASE_PATH, 'restauration');
+      await sauvegarder(ctx.db, 'restauration');
 
-      const restaure = ctx.plans.enregistrer(
+      const restaure = await ctx.plans.enregistrer(
         cible,
         'RESTAURATION',
         `retour a la version ${requete.params.version}`,

@@ -59,8 +59,19 @@ export interface ResultatSync {
   resultats: ResultatOperation[];
   succes: number;
   echecs: number;
-  /** Chemin de la sauvegarde prise avant application. */
+  /** Identifiant de la sauvegarde prise avant application. */
   sauvegarde: string | null;
+  /**
+   * Vrai si le moteur s'est arrete avant la fin faute de temps.
+   *
+   * Necessaire en environnement serverless, ou la fonction est tuee au bout
+   * d'un delai fixe. S'arreter proprement et le dire vaut mieux que d'etre
+   * interrompu au milieu d'une requete : les operations non traitees n'ont
+   * rien ecrit, elles reapparaitront simplement au prochain apercu.
+   */
+  interrompu: boolean;
+  /** Nombre d'operations non tentees a cause du budget de temps. */
+  non_traitees: number;
 }
 
 export const EntreeJournalSchema = z.object({

@@ -1,14 +1,20 @@
-import Database from 'better-sqlite3';
-import { copyFileSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import pg from 'pg';
 
-export type BaseCarter = Database.Database;
+const { Pool } = pg;
+
+export type BaseCarter = pg.Pool;
 
 /**
- * Schema. Le plan lui-meme est stocke en JSON dans une seule colonne :
- * il est arborescent, toujours lu en entier, et le versionner est plus simple
- * qu'une dizaine de tables a joindre. Les tables relationnelles servent a ce
- * qui se requete par date : realise, wellness, correspondances, journal.
+ * Schema Postgres (Neon).
+ *
+ * Le plan reste stocke en JSON dans une colonne : il est arborescent, toujours
+ * lu en entier, et le versionner est plus simple qu'une dizaine de tables a
+ * joindre. Les tables relationnelles servent a ce qui se requete par date :
+ * realise, wellness, correspondances, journal.
+ *
+ * `jsonb` n'apporterait rien ici — le contenu n'est jamais interroge par
+ * champ, seulement lu et reecrit en entier — et imposerait des conversions a
+ * chaque lecture. On garde `text`.
  */
 const MIGRATIONS: { version: number; sql: string }[] = [
   {
@@ -21,9 +27,8 @@ const MIGRATIONS: { version: number; sql: string }[] = [
         modifie_le   TEXT NOT NULL
       );
 
-      -- Historique complet : chaque revision est conservee telle quelle.
       CREATE TABLE plan_version (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        id           BIGSERIAL PRIMARY KEY,
         plan_id      TEXT NOT NULL,
         version      INTEGER NOT NULL,
         contenu      TEXT NOT NULL,
@@ -33,7 +38,6 @@ const MIGRATIONS: { version: number; sql: string }[] = [
         UNIQUE (plan_id, version)
       );
 
-      -- Lien entre une seance locale et son evenement chez un provider.
       CREATE TABLE correspondance (
         seance_id         TEXT NOT NULL,
         provider          TEXT NOT NULL,
@@ -46,7 +50,7 @@ const MIGRATIONS: { version: number; sql: string }[] = [
         ON correspondance (provider, external_id);
 
       CREATE TABLE journal_sync (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        id           BIGSERIAL PRIMARY KEY,
         horodatage   TEXT NOT NULL,
         provider     TEXT NOT NULL,
         action       TEXT NOT NULL,
@@ -54,7 +58,7 @@ const MIGRATIONS: { version: number; sql: string }[] = [
         external_id  TEXT,
         date_seance  TEXT,
         titre        TEXT NOT NULL DEFAULT '',
-        ok           INTEGER NOT NULL,
+        ok           BOOLEAN NOT NULL,
         erreur       TEXT,
         reponse      TEXT
       );
@@ -69,12 +73,12 @@ const MIGRATIONS: { version: number; sql: string }[] = [
         nom              TEXT NOT NULL DEFAULT '',
         type_sport       TEXT NOT NULL DEFAULT 'Run',
         duree_s          INTEGER NOT NULL DEFAULT 0,
-        distance_m       REAL NOT NULL DEFAULT 0,
-        denivele_m       REAL NOT NULL DEFAULT 0,
+        distance_m       DOUBLE PRECISION NOT NULL DEFAULT 0,
+        denivele_m       DOUBLE PRECISION NOT NULL DEFAULT 0,
         fc_moy           INTEGER,
         fc_max           INTEGER,
-        allure_moy_s_km  REAL,
-        allure_gap_s_km  REAL,
+        allure_moy_s_km  DOUBLE PRECISION,
+        allure_gap_s_km  DOUBLE PRECISION,
         rpe              INTEGER,
         ressenti         INTEGER,
         douleurs         TEXT NOT NULL DEFAULT '[]',
@@ -87,89 +91,203 @@ const MIGRATIONS: { version: number; sql: string }[] = [
 
       CREATE TABLE wellness (
         date          TEXT PRIMARY KEY,
-        poids_kg      REAL,
+        poids_kg      DOUBLE PRECISION,
         fc_repos      INTEGER,
-        hrv           REAL,
-        sommeil_h     REAL,
+        hrv           DOUBLE PRECISION,
+        sommeil_h     DOUBLE PRECISION,
         fatigue_1_5   INTEGER,
         humeur_1_5    INTEGER,
         note          TEXT NOT NULL DEFAULT ''
       );
 
-      -- Questions libres de l'athlete, reprises dans l'export coach.
       CREATE TABLE question_coach (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        id         BIGSERIAL PRIMARY KEY,
         texte      TEXT NOT NULL,
         cree_le    TEXT NOT NULL,
-        repondue   INTEGER NOT NULL DEFAULT 0
+        repondue   BOOLEAN NOT NULL DEFAULT FALSE
       );
+
+      /*
+       * Instantanes pris avant chaque operation risquee.
+       *
+       * Sur disque, la sauvegarde etait une copie du fichier SQLite. Sur une
+       * base geree, ce mecanisme n'existe plus : on conserve donc un export
+       * JSON complet du plan et de son historique, qui est ce qu'on ne peut
+       * pas reconstruire. Les activites et le wellness sont, eux,
+       * reimportables depuis le provider.
+       */
+      CREATE TABLE sauvegarde (
+        id       BIGSERIAL PRIMARY KEY,
+        motif    TEXT NOT NULL,
+        cree_le  TEXT NOT NULL,
+        contenu  TEXT NOT NULL
+      );
+      CREATE INDEX idx_sauvegarde_cree_le ON sauvegarde (cree_le DESC);
     `,
   },
 ];
 
-export function ouvrirBase(chemin: string): BaseCarter {
-  const absolu = resolve(chemin);
-  mkdirSync(dirname(absolu), { recursive: true });
+let poolPartage: pg.Pool | null = null;
+let migrationEnCours: Promise<void> | null = null;
 
-  const db = new Database(absolu);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
+/**
+ * Pool partage entre invocations.
+ *
+ * En environnement serverless, le module reste charge entre deux requetes sur
+ * une meme instance : garder le pool en variable de module evite de rouvrir
+ * une connexion a chaque appel. Neon multiplexe derriere son pooler, donc un
+ * pool de petite taille suffit pour un usage mono-utilisateur — et evite de
+ * consommer la limite de connexions avec des instances qui refroidissent.
+ *
+ * On utilise `pg` plutot que le driver WebSocket de Neon : il parle le
+ * protocole Postgres standard, donc la meme configuration marche contre Neon,
+ * contre un Postgres local et contre n'importe quel autre hebergeur. C'est
+ * aussi ce qui rend la couche testable pour de vrai.
+ */
+export function ouvrirBase(url: string): BaseCarter {
+  if (poolPartage !== null) return poolPartage;
 
-  migrer(db);
-  return db;
+  poolPartage = new Pool({
+    connectionString: url,
+    max: 3,
+    idleTimeoutMillis: 10_000,
+    connectionTimeoutMillis: 10_000,
+    // TLS obligatoire des qu'on sort de la machine : la base porte des
+    // donnees de sante. Neon impose deja `sslmode=require` dans son URL.
+    ssl: estLocal(url) ? undefined : { rejectUnauthorized: true },
+  });
+
+  // Une erreur sur une connexion inactive ne doit pas faire tomber le
+  // processus : le pool la remplacera a la prochaine requete.
+  poolPartage.on('error', () => undefined);
+
+  return poolPartage;
 }
 
-function migrer(db: BaseCarter): void {
-  const actuelle = db.pragma('user_version', { simple: true }) as number;
-  for (const migration of MIGRATIONS) {
-    if (migration.version <= actuelle) continue;
-    db.exec('BEGIN');
-    try {
-      db.exec(migration.sql);
-      db.pragma(`user_version = ${migration.version}`);
-      db.exec('COMMIT');
-    } catch (e) {
-      db.exec('ROLLBACK');
-      throw e;
-    }
+function estLocal(url: string): boolean {
+  try {
+    const hote = new URL(url).hostname;
+    return hote === 'localhost' || hote === '127.0.0.1' || hote === '::1';
+  } catch {
+    return false;
   }
 }
 
 /**
- * Sauvegarde la base avant une operation risquee.
+ * Applique les migrations manquantes.
  *
- * Appelee systematiquement avant d'appliquer une synchro et avant d'importer
- * un plan revise : ce sont les deux moments ou l'on peut perdre du travail.
- * `better-sqlite3` expose `backup()` en asynchrone ; ici la base est petite et
- * mono-utilisateur, une copie de fichier apres checkpoint suffit et reste
- * lisible par n'importe quel outil.
+ * Idempotent et sur par concurrence : un verrou consultatif Postgres empeche
+ * deux invocations simultanees d'appliquer la meme migration. C'est le cas
+ * normal au premier deploiement, ou plusieurs requetes arrivent avant que la
+ * base soit initialisee.
  */
-export function sauvegarder(db: BaseCarter, cheminBase: string, motif: string): string {
-  const dossier = join(dirname(resolve(cheminBase)), 'backups');
-  mkdirSync(dossier, { recursive: true });
+export async function migrer(db: BaseCarter): Promise<void> {
+  if (migrationEnCours !== null) return migrationEnCours;
 
-  db.pragma('wal_checkpoint(TRUNCATE)');
+  migrationEnCours = (async () => {
+    const client = await db.connect();
+    try {
+      await client.query(
+        `CREATE TABLE IF NOT EXISTS schema_version (
+           version     INTEGER PRIMARY KEY,
+           applique_le TEXT NOT NULL
+         )`,
+      );
 
-  const horodatage = new Date().toISOString().replace(/[:.]/g, '-');
-  const cible = join(dossier, `carter-${horodatage}-${motif}.db`);
-  copyFileSync(resolve(cheminBase), cible);
+      // 8472531 : identifiant arbitraire mais stable, propre a ce schema.
+      await client.query('SELECT pg_advisory_lock($1)', [8472531]);
 
-  purgerSauvegardes(dossier, 30);
-  return cible;
+      try {
+        const { rows } = await client.query<{ v: number | null }>(
+          'SELECT MAX(version) AS v FROM schema_version',
+        );
+        const actuelle = rows[0]?.v ?? 0;
+
+        for (const migration of MIGRATIONS) {
+          if (migration.version <= actuelle) continue;
+
+          await client.query('BEGIN');
+          try {
+            await client.query(migration.sql);
+            await client.query(
+              'INSERT INTO schema_version (version, applique_le) VALUES ($1, $2)',
+              [migration.version, new Date().toISOString()],
+            );
+            await client.query('COMMIT');
+          } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+          }
+        }
+      } finally {
+        await client.query('SELECT pg_advisory_unlock($1)', [8472531]);
+      }
+    } finally {
+      client.release();
+    }
+  })();
+
+  try {
+    await migrationEnCours;
+  } finally {
+    migrationEnCours = null;
+  }
+}
+
+/**
+ * Prend un instantane avant une operation risquee (synchro, import coach,
+ * restauration) et retourne son identifiant.
+ *
+ * Contrairement a la copie de fichier SQLite qu'elle remplace, cette
+ * sauvegarde ne couvre que le plan et son historique. C'est volontaire : le
+ * plan est la seule donnee non reconstructible. Les activites et le wellness
+ * se reimportent depuis Intervals.icu, et les dupliquer a chaque synchro
+ * ferait gonfler la base sans rien apporter.
+ */
+export async function sauvegarder(
+  db: BaseCarter,
+  motif: string,
+): Promise<string | null> {
+  const cree = new Date().toISOString();
+
+  const plans = await db.query('SELECT * FROM plan');
+  if (plans.rows.length === 0) return null; // rien a sauvegarder
+
+  const versions = await db.query(
+    'SELECT * FROM plan_version ORDER BY plan_id, version',
+  );
+  const correspondances = await db.query('SELECT * FROM correspondance');
+
+  const contenu = JSON.stringify({
+    cree_le: cree,
+    motif,
+    plan: plans.rows,
+    plan_version: versions.rows,
+    correspondance: correspondances.rows,
+  });
+
+  const { rows } = await db.query<{ id: string }>(
+    'INSERT INTO sauvegarde (motif, cree_le, contenu) VALUES ($1, $2, $3) RETURNING id',
+    [motif, cree, contenu],
+  );
+
+  await purgerSauvegardes(db, 30);
+  return rows[0]?.id ?? null;
 }
 
 /** Conserve les N sauvegardes les plus recentes. */
-function purgerSauvegardes(dossier: string, garder: number): void {
-  const fichiers = readdirSync(dossier)
-    .filter((f) => f.endsWith('.db'))
-    .map((f) => ({ f, t: statSync(join(dossier, f)).mtimeMs }))
-    .sort((a, b) => b.t - a.t);
+async function purgerSauvegardes(db: BaseCarter, garder: number): Promise<void> {
+  await db.query(
+    `DELETE FROM sauvegarde
+     WHERE id NOT IN (SELECT id FROM sauvegarde ORDER BY id DESC LIMIT $1)`,
+    [garder],
+  );
+}
 
-  for (const { f } of fichiers.slice(garder)) {
-    try {
-      unlinkSync(join(dossier, f));
-    } catch {
-      // Une sauvegarde qu'on n'arrive pas a purger n'est pas un incident.
-    }
-  }
+/** Ferme le pool. Utile en test et a l'arret d'un serveur long-vivant. */
+export async function fermerBase(): Promise<void> {
+  if (poolPartage === null) return;
+  const pool = poolPartage;
+  poolPartage = null;
+  await pool.end();
 }

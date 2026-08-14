@@ -5,7 +5,7 @@ import type {
   DepotPlan,
   DepotQuestions,
   DepotRealise,
-  DepotSyncSqlite,
+  DepotSyncPg,
   DepotWellness,
 } from '../db/depots.js';
 import type { PlanSyncProvider } from '../providers/types.js';
@@ -14,7 +14,7 @@ export interface Contexte {
   config: Config;
   db: BaseCarter;
   plans: DepotPlan;
-  sync: DepotSyncSqlite;
+  sync: DepotSyncPg;
   realise: DepotRealise;
   wellness: DepotWellness;
   questions: DepotQuestions;
@@ -41,8 +41,8 @@ export function providerRequis(ctx: Contexte, nom: string): PlanSyncProvider {
   return provider;
 }
 
-export function planRequis(ctx: Contexte) {
-  const plan = ctx.plans.courant();
+export async function planRequis(ctx: Contexte) {
+  const plan = await ctx.plans.courant();
   if (plan === null) {
     throw new ErreurHttp(
       404,

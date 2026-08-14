@@ -57,7 +57,7 @@ export function routesSync(app: FastifyInstance, ctx: Contexte): void {
    */
   app.post('/api/sync/apercu', async (requete) => {
     const corps = CorpsApercu.parse(requete.body);
-    const plan = planRequis(ctx);
+    const plan = await planRequis(ctx);
     const provider = providerRequis(ctx, corps.provider);
 
     if (!provider.estConfigure()) {
@@ -73,7 +73,7 @@ export function routesSync(app: FastifyInstance, ctx: Contexte): void {
     const distantes = await provider.listerSeancesPlanifiees(today, fin);
 
     return {
-      apercu: calculerDiff(plan, distantes, ctx.sync.correspondances(provider.nom), {
+      apercu: calculerDiff(plan, distantes, await ctx.sync.correspondances(provider.nom), {
         provider: provider.nom,
         typesSynchronises: ctx.config.SYNC_TYPES,
         fenetreSemaines: fenetre,
@@ -85,14 +85,14 @@ export function routesSync(app: FastifyInstance, ctx: Contexte): void {
   /** Applique un apercu confirme. Sauvegarde la base avant d'ecrire. */
   app.post('/api/sync/appliquer', async (requete) => {
     const corps = CorpsApplication.parse(requete.body);
-    const plan = planRequis(ctx);
+    const plan = await planRequis(ctx);
     const provider = providerRequis(ctx, corps.provider);
 
     if (corps.apercu.provider !== provider.nom) {
       throw new ErreurHttp(400, "L'apercu ne correspond pas au provider demande");
     }
 
-    const sauvegarde = sauvegarder(ctx.db, ctx.config.DATABASE_PATH, 'sync');
+    const sauvegarde = await sauvegarder(ctx.db, 'sync');
 
     const resultat = await appliquerSync(
       plan,
@@ -102,6 +102,7 @@ export function routesSync(app: FastifyInstance, ctx: Contexte): void {
       {
         sauvegarde,
         file: { delaiMs: ctx.config.SYNC_RATE_LIMIT_MS },
+        budgetMs: ctx.config.SYNC_BUDGET_MS,
       },
     );
 
@@ -109,6 +110,6 @@ export function routesSync(app: FastifyInstance, ctx: Contexte): void {
   });
 
   app.get<{ Querystring: { limite?: string } }>('/api/sync/journal', async (requete) => ({
-    journal: ctx.sync.journal(Number(requete.query.limite ?? 200)),
+    journal: await ctx.sync.journal(Number(requete.query.limite ?? 200)),
   }));
 }

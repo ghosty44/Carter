@@ -19,93 +19,111 @@ export type OriginePlan = 'IMPORT' | 'EDITION' | 'COACH' | 'RESTAURATION' | 'INI
 export class DepotPlan {
   constructor(private readonly db: BaseCarter) {}
 
-  courant(): Plan | null {
-    const ligne = this.db
-      .prepare('SELECT contenu FROM plan ORDER BY modifie_le DESC LIMIT 1')
-      .get() as { contenu: string } | undefined;
-    if (ligne === undefined) return null;
-    return PlanSchema.parse(JSON.parse(ligne.contenu));
+  async courant(): Promise<Plan | null> {
+    const { rows } = await this.db.query<{ contenu: string }>(
+      'SELECT contenu FROM plan ORDER BY modifie_le DESC LIMIT 1',
+    );
+    if (rows.length === 0) return null;
+    return PlanSchema.parse(JSON.parse(rows[0]!.contenu));
   }
 
   /**
-   * Enregistre une revision. Le numero de version est attribue ici et non par
-   * l'appelant : c'est la base qui arbitre, sinon deux imports concurrents
-   * ecrivent la meme version.
+   * Enregistre une revision.
+   *
+   * Le numero de version est attribue par la base et non par l'appelant, dans
+   * une transaction : sinon deux imports concurrents ecrivent la meme version.
+   * En serverless, deux requetes simultanees ne sont pas un cas theorique.
    */
-  enregistrer(plan: Plan, origine: OriginePlan, commentaire = ''): Plan {
+  async enregistrer(plan: Plan, origine: OriginePlan, commentaire = ''): Promise<Plan> {
     const maintenant = new Date().toISOString();
+    const client = await this.db.connect();
 
-    const tx = this.db.transaction((p: Plan) => {
-      const max = this.db
-        .prepare('SELECT MAX(version) AS v FROM plan_version WHERE plan_id = ?')
-        .get(p.id) as { v: number | null };
-      const version = (max.v ?? 0) + 1;
+    try {
+      await client.query('BEGIN');
 
-      const complet: Plan = { ...p, version, modifie_le: maintenant, cree_le: p.cree_le ?? maintenant };
+      // Verrouille la ligne du plan pour serialiser les revisions concurrentes.
+      await client.query('SELECT id FROM plan WHERE id = $1 FOR UPDATE', [plan.id]);
+
+      const { rows } = await client.query<{ v: number | null }>(
+        'SELECT MAX(version) AS v FROM plan_version WHERE plan_id = $1',
+        [plan.id],
+      );
+      const version = (rows[0]?.v ?? 0) + 1;
+
+      const complet: Plan = {
+        ...plan,
+        version,
+        modifie_le: maintenant,
+        cree_le: plan.cree_le ?? maintenant,
+      };
       const contenu = JSON.stringify(complet);
 
-      this.db
-        .prepare(
-          `INSERT INTO plan (id, contenu, version, modifie_le) VALUES (?, ?, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET contenu = excluded.contenu,
-                                         version = excluded.version,
-                                         modifie_le = excluded.modifie_le`,
-        )
-        .run(complet.id, contenu, version, maintenant);
+      await client.query(
+        `INSERT INTO plan (id, contenu, version, modifie_le) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (id) DO UPDATE SET contenu = EXCLUDED.contenu,
+                                        version = EXCLUDED.version,
+                                        modifie_le = EXCLUDED.modifie_le`,
+        [complet.id, contenu, version, maintenant],
+      );
 
-      this.db
-        .prepare(
-          `INSERT INTO plan_version (plan_id, version, contenu, origine, commentaire, cree_le)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-        )
-        .run(complet.id, version, contenu, origine, commentaire, maintenant);
+      await client.query(
+        `INSERT INTO plan_version (plan_id, version, contenu, origine, commentaire, cree_le)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [complet.id, version, contenu, origine, commentaire, maintenant],
+      );
 
+      await client.query('COMMIT');
       return complet;
-    });
-
-    return tx(plan);
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw e;
+    } finally {
+      client.release();
+    }
   }
 
-  versions(planId: string): {
-    version: number;
-    origine: string;
-    commentaire: string;
-    cree_le: string;
-  }[] {
-    return this.db
-      .prepare(
-        `SELECT version, origine, commentaire, cree_le
-         FROM plan_version WHERE plan_id = ? ORDER BY version DESC`,
-      )
-      .all(planId) as { version: number; origine: string; commentaire: string; cree_le: string }[];
+  async versions(planId: string): Promise<
+    { version: number; origine: string; commentaire: string; cree_le: string }[]
+  > {
+    const { rows } = await this.db.query<{
+      version: number;
+      origine: string;
+      commentaire: string;
+      cree_le: string;
+    }>(
+      `SELECT version, origine, commentaire, cree_le
+       FROM plan_version WHERE plan_id = $1 ORDER BY version DESC`,
+      [planId],
+    );
+    return rows;
   }
 
-  versionPrecise(planId: string, version: number): Plan | null {
-    const ligne = this.db
-      .prepare('SELECT contenu FROM plan_version WHERE plan_id = ? AND version = ?')
-      .get(planId, version) as { contenu: string } | undefined;
-    return ligne ? PlanSchema.parse(JSON.parse(ligne.contenu)) : null;
+  async versionPrecise(planId: string, version: number): Promise<Plan | null> {
+    const { rows } = await this.db.query<{ contenu: string }>(
+      'SELECT contenu FROM plan_version WHERE plan_id = $1 AND version = $2',
+      [planId, version],
+    );
+    return rows.length === 0 ? null : PlanSchema.parse(JSON.parse(rows[0]!.contenu));
   }
 }
 
-/** Correspondances + journal : c'est l'implementation SQLite de `DepotSync`. */
-export class DepotSyncSqlite implements DepotSync {
+/** Correspondances + journal : implementation Postgres de `DepotSync`. */
+export class DepotSyncPg implements DepotSync {
   constructor(private readonly db: BaseCarter) {}
 
-  correspondances(provider: NomProvider): Correspondance[] {
-    const lignes = this.db
-      .prepare(
-        `SELECT seance_id, provider, external_id, hash_synchronise
-         FROM correspondance WHERE provider = ?`,
-      )
-      .all(provider) as {
+  async correspondances(provider: NomProvider): Promise<Correspondance[]> {
+    const { rows } = await this.db.query<{
       seance_id: string;
       provider: NomProvider;
       external_id: string;
       hash_synchronise: string;
-    }[];
+    }>(
+      `SELECT seance_id, provider, external_id, hash_synchronise
+       FROM correspondance WHERE provider = $1`,
+      [provider],
+    );
 
-    return lignes.map((l) => ({
+    return rows.map((l) => ({
       seanceId: l.seance_id,
       provider: l.provider,
       externalId: l.external_id,
@@ -113,29 +131,29 @@ export class DepotSyncSqlite implements DepotSync {
     }));
   }
 
-  enregistrerCorrespondance(e: {
+  async enregistrerCorrespondance(e: {
     seanceId: string;
     externalId: string;
     provider: NomProvider;
     hash: string;
-  }): void {
-    this.db
-      .prepare(
-        `INSERT INTO correspondance (seance_id, provider, external_id, hash_synchronise, synchronise_le)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(seance_id, provider) DO UPDATE SET
-           external_id = excluded.external_id,
-           hash_synchronise = excluded.hash_synchronise,
-           synchronise_le = excluded.synchronise_le`,
-      )
-      .run(e.seanceId, e.provider, e.externalId, e.hash, new Date().toISOString());
+  }): Promise<void> {
+    await this.db.query(
+      `INSERT INTO correspondance
+         (seance_id, provider, external_id, hash_synchronise, synchronise_le)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (seance_id, provider) DO UPDATE SET
+         external_id = EXCLUDED.external_id,
+         hash_synchronise = EXCLUDED.hash_synchronise,
+         synchronise_le = EXCLUDED.synchronise_le`,
+      [e.seanceId, e.provider, e.externalId, e.hash, new Date().toISOString()],
+    );
   }
 
-  oublierCorrespondance(externalId: string): void {
-    this.db.prepare('DELETE FROM correspondance WHERE external_id = ?').run(externalId);
+  async oublierCorrespondance(externalId: string): Promise<void> {
+    await this.db.query('DELETE FROM correspondance WHERE external_id = $1', [externalId]);
   }
 
-  journaliser(entree: {
+  async journaliser(entree: {
     provider: NomProvider;
     action: string;
     seanceId: string | null;
@@ -145,14 +163,12 @@ export class DepotSyncSqlite implements DepotSync {
     ok: boolean;
     erreur: string | null;
     reponse: string | null;
-  }): void {
-    this.db
-      .prepare(
-        `INSERT INTO journal_sync
-           (horodatage, provider, action, seance_id, external_id, date_seance, titre, ok, erreur, reponse)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
+  }): Promise<void> {
+    await this.db.query(
+      `INSERT INTO journal_sync
+         (horodatage, provider, action, seance_id, external_id, date_seance, titre, ok, erreur, reponse)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [
         new Date().toISOString(),
         entree.provider,
         entree.action,
@@ -160,23 +176,23 @@ export class DepotSyncSqlite implements DepotSync {
         entree.externalId,
         entree.dateSeance,
         entree.titre,
-        entree.ok ? 1 : 0,
+        entree.ok,
         entree.erreur,
         entree.reponse,
-      );
+      ],
+    );
   }
 
-  journal(limite = 200): EntreeJournal[] {
-    const lignes = this.db
-      .prepare(
-        `SELECT id, horodatage, provider, action, seance_id, external_id,
-                date_seance, titre, ok, erreur, reponse
-         FROM journal_sync ORDER BY id DESC LIMIT ?`,
-      )
-      .all(limite) as Record<string, unknown>[];
+  async journal(limite = 200): Promise<EntreeJournal[]> {
+    const { rows } = await this.db.query<Record<string, unknown>>(
+      `SELECT id, horodatage, provider, action, seance_id, external_id,
+              date_seance, titre, ok, erreur, reponse
+       FROM journal_sync ORDER BY id DESC LIMIT $1`,
+      [limite],
+    );
 
-    return lignes.map((l) => ({
-      id: l.id as number,
+    return rows.map((l) => ({
+      id: Number(l.id),
       horodatage: l.horodatage as string,
       provider: l.provider as NomProvider,
       action: l.action as EntreeJournal['action'],
@@ -184,7 +200,7 @@ export class DepotSyncSqlite implements DepotSync {
       external_id: (l.external_id as string | null) ?? null,
       date_seance: (l.date_seance as IsoDate | null) ?? null,
       titre: (l.titre as string) ?? '',
-      ok: l.ok === 1,
+      ok: l.ok === true,
       erreur: (l.erreur as string | null) ?? null,
       reponse: (l.reponse as string | null) ?? null,
     }));
@@ -194,127 +210,191 @@ export class DepotSyncSqlite implements DepotSync {
 export class DepotRealise {
   constructor(private readonly db: BaseCarter) {}
 
-  surPeriode(debut: IsoDate, fin: IsoDate): SeanceRealisee[] {
-    const lignes = this.db
-      .prepare('SELECT * FROM seance_realisee WHERE date >= ? AND date <= ? ORDER BY date')
-      .all(debut, fin) as Record<string, unknown>[];
-    return lignes.map(versRealisee);
+  async surPeriode(debut: IsoDate, fin: IsoDate): Promise<SeanceRealisee[]> {
+    const { rows } = await this.db.query<Record<string, unknown>>(
+      'SELECT * FROM seance_realisee WHERE date >= $1 AND date <= $2 ORDER BY date',
+      [debut, fin],
+    );
+    return rows.map(versRealisee);
   }
 
-  parId(id: string): SeanceRealisee | null {
-    const ligne = this.db.prepare('SELECT * FROM seance_realisee WHERE id = ?').get(id) as
-      | Record<string, unknown>
-      | undefined;
-    return ligne ? versRealisee(ligne) : null;
+  async parId(id: string): Promise<SeanceRealisee | null> {
+    const { rows } = await this.db.query<Record<string, unknown>>(
+      'SELECT * FROM seance_realisee WHERE id = $1',
+      [id],
+    );
+    return rows.length === 0 ? null : versRealisee(rows[0]!);
   }
 
   /**
-   * Insere ou met a jour. Le couple (source, external_id) est unique : une
-   * activite reimportee deux fois ne cree pas de doublon, et un rattachement
-   * fait a la main n'est pas ecrase par un reimport.
+   * Insere ou met a jour une seance realisee.
+   *
+   * `preserverSaisie` distingue les deux appelants, et cette distinction doit
+   * rester explicite : un import provider ne doit pas ecraser ce que l'athlete
+   * a note, mais une saisie faite dans l'app doit pouvoir tout modifier, y
+   * compris retirer une douleur entree par erreur.
+   *
+   * Deduire l'intention de la forme des donnees ne marche pas : une liste de
+   * douleurs vide et une liste de douleurs absente sont indistinguables une
+   * fois serialisees, et on finit par refuser silencieusement une saisie
+   * legitime.
+   *
+   * Le couple (source, external_id) reste unique : une activite reimportee ne
+   * cree jamais de doublon, quel que soit le mode.
    */
-  enregistrer(r: SeanceRealisee): void {
-    const existant =
-      r.external_id === null
-        ? null
-        : (this.db
-            .prepare('SELECT id, seance_id, rpe, ressenti, douleurs, commentaire FROM seance_realisee WHERE source = ? AND external_id = ?')
-            .get(r.source, r.external_id) as Record<string, unknown> | undefined) ?? null;
+  async enregistrer(
+    r: SeanceRealisee,
+    options: { preserverSaisie?: boolean } = {},
+  ): Promise<void> {
+    let fusion = r;
 
-    // Les champs saisis a la main ne sont jamais ecrases par un reimport.
-    const fusion: SeanceRealisee = existant
-      ? {
-          ...r,
-          id: existant.id as string,
-          seance_id: (existant.seance_id as string | null) ?? r.seance_id,
-          rpe: (existant.rpe as number | null) ?? r.rpe,
-          ressenti: (existant.ressenti as number | null) ?? r.ressenti,
-          douleurs: existant.douleurs ? JSON.parse(existant.douleurs as string) : r.douleurs,
-          commentaire: (existant.commentaire as string) || r.commentaire,
+    if (r.external_id !== null) {
+      const { rows } = await this.db.query<Record<string, unknown>>(
+        `SELECT id, seance_id, rpe, ressenti, douleurs, commentaire
+         FROM seance_realisee WHERE source = $1 AND external_id = $2`,
+        [r.source, r.external_id],
+      );
+
+      const existant = rows[0];
+      if (existant !== undefined) {
+        // L'identifiant existant l'emporte toujours : c'est ce qui garantit
+        // qu'on met a jour la ligne au lieu d'en creer une seconde.
+        fusion = { ...r, id: existant.id as string };
+
+        if (options.preserverSaisie === true) {
+          const douleurs = existant.douleurs as string | null;
+          fusion = {
+            ...fusion,
+            seance_id: (existant.seance_id as string | null) ?? r.seance_id,
+            rpe: (existant.rpe as number | null) ?? r.rpe,
+            ressenti: (existant.ressenti as number | null) ?? r.ressenti,
+            douleurs:
+              douleurs === null
+                ? r.douleurs
+                : (JSON.parse(douleurs) as SeanceRealisee['douleurs']),
+            commentaire: (existant.commentaire as string) || r.commentaire,
+          };
         }
-      : r;
+      }
+    }
 
-    this.db
-      .prepare(
-        `INSERT INTO seance_realisee
-           (id, seance_id, date, source, external_id, nom, type_sport, duree_s, distance_m,
-            denivele_m, fc_moy, fc_max, allure_moy_s_km, allure_gap_s_km, rpe, ressenti,
-            douleurs, commentaire)
-         VALUES (@id, @seance_id, @date, @source, @external_id, @nom, @type_sport, @duree_s,
-                 @distance_m, @denivele_m, @fc_moy, @fc_max, @allure_moy_s_km, @allure_gap_s_km,
-                 @rpe, @ressenti, @douleurs, @commentaire)
-         ON CONFLICT(id) DO UPDATE SET
-           seance_id = excluded.seance_id, date = excluded.date, nom = excluded.nom,
-           type_sport = excluded.type_sport, duree_s = excluded.duree_s,
-           distance_m = excluded.distance_m, denivele_m = excluded.denivele_m,
-           fc_moy = excluded.fc_moy, fc_max = excluded.fc_max,
-           allure_moy_s_km = excluded.allure_moy_s_km, allure_gap_s_km = excluded.allure_gap_s_km,
-           rpe = excluded.rpe, ressenti = excluded.ressenti,
-           douleurs = excluded.douleurs, commentaire = excluded.commentaire`,
-      )
-      .run({ ...fusion, douleurs: JSON.stringify(fusion.douleurs) });
+    await this.db.query(
+      `INSERT INTO seance_realisee
+         (id, seance_id, date, source, external_id, nom, type_sport, duree_s, distance_m,
+          denivele_m, fc_moy, fc_max, allure_moy_s_km, allure_gap_s_km, rpe, ressenti,
+          douleurs, commentaire)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+       ON CONFLICT (id) DO UPDATE SET
+         seance_id = EXCLUDED.seance_id, date = EXCLUDED.date, nom = EXCLUDED.nom,
+         type_sport = EXCLUDED.type_sport, duree_s = EXCLUDED.duree_s,
+         distance_m = EXCLUDED.distance_m, denivele_m = EXCLUDED.denivele_m,
+         fc_moy = EXCLUDED.fc_moy, fc_max = EXCLUDED.fc_max,
+         allure_moy_s_km = EXCLUDED.allure_moy_s_km,
+         allure_gap_s_km = EXCLUDED.allure_gap_s_km,
+         rpe = EXCLUDED.rpe, ressenti = EXCLUDED.ressenti,
+         douleurs = EXCLUDED.douleurs, commentaire = EXCLUDED.commentaire`,
+      [
+        fusion.id,
+        fusion.seance_id,
+        fusion.date,
+        fusion.source,
+        fusion.external_id,
+        fusion.nom,
+        fusion.type_sport,
+        fusion.duree_s,
+        fusion.distance_m,
+        fusion.denivele_m,
+        fusion.fc_moy,
+        fusion.fc_max,
+        fusion.allure_moy_s_km,
+        fusion.allure_gap_s_km,
+        fusion.rpe,
+        fusion.ressenti,
+        JSON.stringify(fusion.douleurs),
+        fusion.commentaire,
+      ],
+    );
   }
 
-  rattacher(realiseeId: string, seanceId: string | null): void {
-    this.db.prepare('UPDATE seance_realisee SET seance_id = ? WHERE id = ?').run(seanceId, realiseeId);
+  async rattacher(realiseeId: string, seanceId: string | null): Promise<void> {
+    await this.db.query('UPDATE seance_realisee SET seance_id = $1 WHERE id = $2', [
+      seanceId,
+      realiseeId,
+    ]);
   }
 }
 
 export class DepotWellness {
   constructor(private readonly db: BaseCarter) {}
 
-  surPeriode(debut: IsoDate, fin: IsoDate): Wellness[] {
-    const lignes = this.db
-      .prepare('SELECT * FROM wellness WHERE date >= ? AND date <= ? ORDER BY date')
-      .all(debut, fin) as Record<string, unknown>[];
-    return lignes.map((l) => WellnessSchema.parse(l));
+  async surPeriode(debut: IsoDate, fin: IsoDate): Promise<Wellness[]> {
+    const { rows } = await this.db.query<Record<string, unknown>>(
+      'SELECT * FROM wellness WHERE date >= $1 AND date <= $2 ORDER BY date',
+      [debut, fin],
+    );
+    return rows.map((l) => WellnessSchema.parse(l));
   }
 
-  enregistrer(w: Wellness): void {
-    this.db
-      .prepare(
-        `INSERT INTO wellness (date, poids_kg, fc_repos, hrv, sommeil_h, fatigue_1_5, humeur_1_5, note)
-         VALUES (@date, @poids_kg, @fc_repos, @hrv, @sommeil_h, @fatigue_1_5, @humeur_1_5, @note)
-         ON CONFLICT(date) DO UPDATE SET
-           poids_kg = COALESCE(excluded.poids_kg, wellness.poids_kg),
-           fc_repos = COALESCE(excluded.fc_repos, wellness.fc_repos),
-           hrv = COALESCE(excluded.hrv, wellness.hrv),
-           sommeil_h = COALESCE(excluded.sommeil_h, wellness.sommeil_h),
-           fatigue_1_5 = COALESCE(excluded.fatigue_1_5, wellness.fatigue_1_5),
-           humeur_1_5 = COALESCE(excluded.humeur_1_5, wellness.humeur_1_5),
-           note = CASE WHEN excluded.note = '' THEN wellness.note ELSE excluded.note END`,
-      )
-      .run(w);
+  /**
+   * Une valeur absente ne doit jamais effacer une valeur deja saisie : un
+   * import Intervals.icu qui ne remonte pas le poids ne doit pas supprimer le
+   * poids entre a la main le matin meme.
+   */
+  async enregistrer(w: Wellness): Promise<void> {
+    await this.db.query(
+      `INSERT INTO wellness
+         (date, poids_kg, fc_repos, hrv, sommeil_h, fatigue_1_5, humeur_1_5, note)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (date) DO UPDATE SET
+         poids_kg = COALESCE(EXCLUDED.poids_kg, wellness.poids_kg),
+         fc_repos = COALESCE(EXCLUDED.fc_repos, wellness.fc_repos),
+         hrv = COALESCE(EXCLUDED.hrv, wellness.hrv),
+         sommeil_h = COALESCE(EXCLUDED.sommeil_h, wellness.sommeil_h),
+         fatigue_1_5 = COALESCE(EXCLUDED.fatigue_1_5, wellness.fatigue_1_5),
+         humeur_1_5 = COALESCE(EXCLUDED.humeur_1_5, wellness.humeur_1_5),
+         note = CASE WHEN EXCLUDED.note = '' THEN wellness.note ELSE EXCLUDED.note END`,
+      [
+        w.date,
+        w.poids_kg,
+        w.fc_repos,
+        w.hrv,
+        w.sommeil_h,
+        w.fatigue_1_5,
+        w.humeur_1_5,
+        w.note,
+      ],
+    );
   }
 }
 
 export class DepotQuestions {
   constructor(private readonly db: BaseCarter) {}
 
-  ouvertes(): { id: number; texte: string; cree_le: string }[] {
-    return this.db
-      .prepare('SELECT id, texte, cree_le FROM question_coach WHERE repondue = 0 ORDER BY id')
-      .all() as { id: number; texte: string; cree_le: string }[];
+  async ouvertes(): Promise<{ id: number; texte: string; cree_le: string }[]> {
+    const { rows } = await this.db.query<{ id: string; texte: string; cree_le: string }>(
+      'SELECT id, texte, cree_le FROM question_coach WHERE repondue = FALSE ORDER BY id',
+    );
+    return rows.map((r) => ({ id: Number(r.id), texte: r.texte, cree_le: r.cree_le }));
   }
 
-  ajouter(texte: string): void {
-    this.db
-      .prepare('INSERT INTO question_coach (texte, cree_le) VALUES (?, ?)')
-      .run(texte, new Date().toISOString());
+  async ajouter(texte: string): Promise<void> {
+    await this.db.query('INSERT INTO question_coach (texte, cree_le) VALUES ($1, $2)', [
+      texte,
+      new Date().toISOString(),
+    ]);
   }
 
-  marquerRepondues(ids: number[]): void {
+  async marquerRepondues(ids: number[]): Promise<void> {
     if (ids.length === 0) return;
-    const placeholders = ids.map(() => '?').join(',');
-    this.db
-      .prepare(`UPDATE question_coach SET repondue = 1 WHERE id IN (${placeholders})`)
-      .run(...ids);
+    await this.db.query('UPDATE question_coach SET repondue = TRUE WHERE id = ANY($1)', [ids]);
   }
 }
 
 function versRealisee(l: Record<string, unknown>): SeanceRealisee {
   return SeanceRealiseeSchema.parse({
     ...l,
+    // Postgres renvoie les DOUBLE PRECISION en nombre, mais les BIGINT en
+    // chaine ; les colonnes concernees ici sont toutes numeriques cote JS.
     douleurs: JSON.parse((l.douleurs as string) ?? '[]'),
   });
 }

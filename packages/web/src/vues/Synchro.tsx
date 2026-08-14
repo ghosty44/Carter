@@ -80,22 +80,13 @@ export function VueSynchro() {
     }
   }
 
-  /** Rejoue uniquement ce qui a echoue. */
+  /**
+   * Relance ce qui reste : les echecs et ce qui n'a pas ete tente faute de
+   * temps. On repasse par un apercu frais plutot que de rejouer l'ancien, pour
+   * que la revalidation cote serveur travaille sur l'etat courant.
+   */
   async function reessayer(): Promise<void> {
-    if (resultat === null) return;
-    const echouees = resultat.resultats.filter((r) => !r.ok).map((r) => r.operation);
-    if (echouees.length === 0) return;
-
-    setApercu({
-      provider: resultat.provider,
-      fenetre: { debut: '', fin: '' },
-      aCreer: echouees.filter((o) => o.action === 'CREER'),
-      aMettreAJour: echouees.filter((o) => o.action === 'METTRE_A_JOUR'),
-      aSupprimer: echouees.filter((o) => o.action === 'SUPPRIMER'),
-      ignorees: [],
-      calcule_le: new Date().toISOString(),
-    });
-    setResultat(null);
+    await previsualiser();
   }
 
   const total =
@@ -189,14 +180,23 @@ export function VueSynchro() {
       {resultat !== null && (
         <section>
           <h2>Resultat</h2>
-          <Message type={resultat.echecs === 0 ? 'succes' : 'erreur'}>
+          <Message
+            type={resultat.echecs === 0 && !resultat.interrompu ? 'succes' : 'erreur'}
+          >
             {resultat.succes} operation(s) reussie(s), {resultat.echecs} en echec.
+            {resultat.interrompu && (
+              <div>
+                <strong>Interrompu faute de temps</strong> — {resultat.non_traitees}{' '}
+                operation(s) non tentees. Elles n'ont rien ecrit : relance pour
+                terminer.
+              </div>
+            )}
             {resultat.sauvegarde && (
-              <div className="doux">Sauvegarde prise avant application.</div>
+              <div className="doux">Sauvegarde du plan prise avant application.</div>
             )}
           </Message>
 
-          {resultat.echecs > 0 && (
+          {(resultat.echecs > 0 || resultat.interrompu) && (
             <>
               <div className="carte">
                 {resultat.resultats
@@ -214,8 +214,8 @@ export function VueSynchro() {
                     </div>
                   ))}
               </div>
-              <button type="button" onClick={reessayer}>
-                Reessayer uniquement les echecs
+              <button type="button" onClick={() => void reessayer()} disabled={occupe}>
+                Recalculer et reprendre ce qui reste
               </button>
             </>
           )}

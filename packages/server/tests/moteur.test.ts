@@ -18,12 +18,12 @@ class DepotMemoire implements DepotSync {
   correspondances = new Map<string, Correspondance>();
   journal: Parameters<DepotSync['journaliser']>[0][] = [];
 
-  enregistrerCorrespondance(e: {
+  async enregistrerCorrespondance(e: {
     seanceId: string;
     externalId: string;
     provider: ApercuSync['provider'];
     hash: string;
-  }): void {
+  }): Promise<void> {
     this.correspondances.set(e.seanceId, {
       seanceId: e.seanceId,
       externalId: e.externalId,
@@ -32,13 +32,13 @@ class DepotMemoire implements DepotSync {
     });
   }
 
-  oublierCorrespondance(externalId: string): void {
+  async oublierCorrespondance(externalId: string): Promise<void> {
     for (const [k, v] of this.correspondances) {
       if (v.externalId === externalId) this.correspondances.delete(k);
     }
   }
 
-  journaliser(entree: Parameters<DepotSync['journaliser']>[0]): void {
+  async journaliser(entree: Parameters<DepotSync['journaliser']>[0]): Promise<void> {
     this.journal.push(entree);
   }
 
@@ -320,5 +320,71 @@ describe('cycle complet plan -> synchro -> modification -> resynchro', () => {
 
     // Le hash enregistre correspond bien au contenu courant.
     expect(depot.liste()[0]!.hashSynchronise).toBe(hashDe(plan, 'a'));
+  });
+});
+
+describe('appliquerSync — budget de temps', () => {
+  it("s'arrete proprement quand le budget est epuise et annonce ce qui reste", async () => {
+    const plan = planTest([
+      [
+        { id: 'a', jour: 1 },
+        { id: 'b', jour: 2 },
+        { id: 'c', jour: 3 },
+        { id: 'd', jour: 4 },
+      ],
+    ]);
+    const apercu = calculerDiff(plan, [], [], OPTIONS);
+
+    // Horloge simulee : chaque consultation avance de 10 s.
+    let instant = 0;
+    const resultat = await appliquerSync(plan, apercu, provider, depot, {
+      today: LUNDI,
+      file: SANS_ATTENTE,
+      budgetMs: 25_000,
+      maintenant: () => (instant += 10_000),
+    });
+
+    expect(resultat.interrompu).toBe(true);
+    expect(resultat.succes + resultat.non_traitees).toBe(4);
+    expect(resultat.non_traitees).toBeGreaterThan(0);
+  });
+
+  it('ne laisse aucune trace des operations non tentees', async () => {
+    const plan = planTest([
+      [{ id: 'a', jour: 1 }, { id: 'b', jour: 2 }, { id: 'c', jour: 3 }],
+    ]);
+    const apercu = calculerDiff(plan, [], [], OPTIONS);
+
+    let instant = 0;
+    const resultat = await appliquerSync(plan, apercu, provider, depot, {
+      today: LUNDI,
+      file: SANS_ATTENTE,
+      budgetMs: 15_000,
+      maintenant: () => (instant += 10_000),
+    });
+
+    // Rien d'ecrit pour les non tentees : elles reapparaissent a l'apercu.
+    expect(depot.liste()).toHaveLength(resultat.succes);
+    expect(provider.etat()).toHaveLength(resultat.succes);
+
+    const restant = apercuDesEchecs(apercu, resultat);
+    const total =
+      restant.aCreer.length + restant.aMettreAJour.length + restant.aSupprimer.length;
+    expect(total).toBe(resultat.non_traitees + resultat.echecs);
+  });
+
+  it('va au bout quand le budget est large', async () => {
+    const plan = planTest([[{ id: 'a', jour: 1 }, { id: 'b', jour: 2 }]]);
+    const apercu = calculerDiff(plan, [], [], OPTIONS);
+
+    const resultat = await appliquerSync(plan, apercu, provider, depot, {
+      today: LUNDI,
+      file: SANS_ATTENTE,
+      budgetMs: 60_000,
+    });
+
+    expect(resultat.interrompu).toBe(false);
+    expect(resultat.non_traitees).toBe(0);
+    expect(resultat.succes).toBe(2);
   });
 });

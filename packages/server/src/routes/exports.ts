@@ -31,7 +31,7 @@ export function routesExports(app: FastifyInstance, ctx: Contexte): void {
   app.get<{ Querystring: z.infer<typeof PlageExport> }>(
     '/api/export/ics',
     async (requete, reponse) => {
-      const plan = planRequis(ctx);
+      const plan = await planRequis(ctx);
       const query = PlageExport.parse(requete.query);
 
       const types = query.types
@@ -53,7 +53,7 @@ export function routesExports(app: FastifyInstance, ctx: Contexte): void {
   );
 
   app.get('/api/export/plan.csv', async (_requete, reponse) => {
-    const plan = planRequis(ctx);
+    const plan = await planRequis(ctx);
     return reponse
       .header('Content-Type', 'text/csv; charset=utf-8')
       .header('Content-Disposition', 'attachment; filename="carter-plan.csv"')
@@ -65,19 +65,19 @@ export function routesExports(app: FastifyInstance, ctx: Contexte): void {
     async (requete, reponse) => {
       const query = PlageExport.parse(requete.query);
       const today = aujourdhui();
-      const plan = ctx.plans.courant();
+      const plan = await ctx.plans.courant();
       const debut = query.debut ?? plan?.blocs[0]?.date_debut ?? today;
 
       return reponse
         .header('Content-Type', 'text/csv; charset=utf-8')
         .header('Content-Disposition', 'attachment; filename="carter-realise.csv"')
-        .send(exporterRealiseCsv(ctx.realise.surPeriode(debut, query.fin ?? today)));
+        .send(exporterRealiseCsv(await ctx.realise.surPeriode(debut, query.fin ?? today)));
     },
   );
 
   /** Le plan brut, pour ne jamais enfermer les donnees dans l'app. */
   app.get('/api/export/plan.json', async (_requete, reponse) => {
-    const plan = planRequis(ctx);
+    const plan = await planRequis(ctx);
     return reponse
       .header('Content-Disposition', 'attachment; filename="carter-plan.json"')
       .send(plan);
@@ -91,7 +91,7 @@ export function routesExports(app: FastifyInstance, ctx: Contexte): void {
   app.get<{ Querystring: z.infer<typeof PlageExport> }>(
     '/api/export/coach',
     async (requete) => {
-      const plan = planRequis(ctx);
+      const plan = await planRequis(ctx);
       const query = PlageExport.parse(requete.query);
       const today = aujourdhui();
       const defaut = periodeParDefaut(today);
@@ -100,15 +100,15 @@ export function routesExports(app: FastifyInstance, ctx: Contexte): void {
       const fin = query.fin ?? defaut.fin;
       const debutPlan = plan.blocs[0]?.date_debut ?? debut;
 
-      const realisees = ctx.realise.surPeriode(debutPlan, today);
-      const wellness = ctx.wellness.surPeriode(debutPlan, today);
+      const realisees = await ctx.realise.surPeriode(debutPlan, today);
+      const wellness = await ctx.wellness.surPeriode(debutPlan, today);
 
       const charge = construireExportCoach({
         plan,
         realisees,
         wellness,
         alertes: calculerAlertes({ plan, realisees, wellness, today }),
-        questions: ctx.questions.ouvertes().map((q) => q.texte),
+        questions: (await ctx.questions.ouvertes()).map((q) => q.texte),
         contraintes: CONTRAINTES_PAR_DEFAUT,
         debut,
         fin,
@@ -146,7 +146,7 @@ export function routesExports(app: FastifyInstance, ctx: Contexte): void {
         throw new ErreurHttp(422, 'Le plan revise est incoherent', { erreurs: incoherences });
       }
 
-      const courant = planRequis(ctx);
+      const courant = await planRequis(ctx);
       if (revise.id !== courant.id) {
         throw new ErreurHttp(
           409,
@@ -162,8 +162,8 @@ export function routesExports(app: FastifyInstance, ctx: Contexte): void {
         return { applique: false, diff, diff_markdown: diffEnMarkdown(diff), commentaire };
       }
 
-      sauvegarder(ctx.db, ctx.config.DATABASE_PATH, 'import-coach');
-      const enregistre = ctx.plans.enregistrer(revise, 'COACH', commentaire ?? '');
+      await sauvegarder(ctx.db, 'import-coach');
+      const enregistre = await ctx.plans.enregistrer(revise, 'COACH', commentaire ?? '');
 
       return {
         applique: true,

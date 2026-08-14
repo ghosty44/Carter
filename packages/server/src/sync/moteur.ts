@@ -14,7 +14,7 @@ import { FileSequentielle, type OptionsFile } from './file.js';
 
 /**
  * Ecriture de l'etat de synchro. Abstrait pour que le moteur se teste sans
- * base de donnees : l'implementation SQLite vit dans `src/db/`.
+ * base de donnees : l'implementation Postgres vit dans `src/db/`.
  */
 export interface DepotSync {
   enregistrerCorrespondance(entree: {
@@ -22,8 +22,8 @@ export interface DepotSync {
     externalId: string;
     provider: ApercuSync['provider'];
     hash: string;
-  }): void;
-  oublierCorrespondance(externalId: string): void;
+  }): Promise<void>;
+  oublierCorrespondance(externalId: string): Promise<void>;
   journaliser(entree: {
     provider: ApercuSync['provider'];
     action: OperationSync['action'];
@@ -34,14 +34,25 @@ export interface DepotSync {
     ok: boolean;
     erreur: string | null;
     reponse: string | null;
-  }): void;
+  }): Promise<void>;
 }
 
 export interface OptionsApplication {
-  /** Sauvegarde de la base prise avant application, tracee dans le resultat. */
+  /** Sauvegarde prise avant application, tracee dans le resultat. */
   sauvegarde?: string | null;
   file?: Partial<OptionsFile>;
   today?: IsoDate;
+  /**
+   * Temps maximal accorde a l'ensemble des operations, en millisecondes.
+   *
+   * Le moteur n'entame pas une nouvelle operation au-dela de ce budget. Sur
+   * une plateforme qui tue les fonctions apres un delai fixe, c'est ce qui
+   * fait la difference entre un arret propre — avec un decompte de ce qui
+   * reste — et une coupure au milieu d'une requete HTTP vers le provider.
+   */
+  budgetMs?: number;
+  /** Injectable pour les tests. */
+  maintenant?: () => number;
 }
 
 /**
@@ -72,14 +83,28 @@ export async function appliquerSync(
   const ops = [...apercu.aSupprimer, ...apercu.aMettreAJour, ...apercu.aCreer];
 
   const resultats: ResultatOperation[] = [];
+  const maintenant = options.maintenant ?? (() => Date.now());
+  const debut = maintenant();
+  const budget = options.budgetMs ?? Number.POSITIVE_INFINITY;
 
-  for (let i = 0; i < ops.length; i++) {
+  let interrompu = false;
+  let i = 0;
+
+  for (; i < ops.length; i++) {
     const op = ops[i]!;
+
+    // On verifie avant d'entamer l'operation, jamais pendant : une requete
+    // deja partie doit aller au bout, sinon on ne sait plus si le provider
+    // l'a appliquee.
+    if (i > 0 && maintenant() - debut >= budget) {
+      interrompu = true;
+      break;
+    }
 
     const refus = verifier(op, parId, today, provider);
     if (refus !== null) {
       resultats.push({ operation: op, ok: false, externalId: op.externalId, erreur: refus, tentatives: 0 });
-      depot.journaliser({
+      await depot.journaliser({
         provider: apercu.provider,
         action: op.action,
         seanceId: op.seanceId,
@@ -97,9 +122,9 @@ export async function appliquerSync(
 
     if (tentative.ok) {
       const externalId = tentative.valeur ?? op.externalId;
-      appliquerEffet(op, externalId, parId, depot, apercu.provider);
+      await appliquerEffet(op, externalId, parId, depot, apercu.provider);
       resultats.push({ operation: op, ok: true, externalId, erreur: null, tentatives: tentative.tentatives });
-      depot.journaliser({
+      await depot.journaliser({
         provider: apercu.provider,
         action: op.action,
         seanceId: op.seanceId,
@@ -119,7 +144,7 @@ export async function appliquerSync(
         erreur: message,
         tentatives: tentative.tentatives,
       });
-      depot.journaliser({
+      await depot.journaliser({
         provider: apercu.provider,
         action: op.action,
         seanceId: op.seanceId,
@@ -143,6 +168,8 @@ export async function appliquerSync(
     succes: resultats.length - echecs,
     echecs,
     sauvegarde: options.sauvegarde ?? null,
+    interrompu,
+    non_traitees: ops.length - i,
   };
 }
 
@@ -209,20 +236,20 @@ async function executer(
   return op.externalId;
 }
 
-function appliquerEffet(
+async function appliquerEffet(
   op: OperationSync,
   externalId: string | null,
   parId: Map<string, SeancePlanifiee>,
   depot: DepotSync,
   provider: ApercuSync['provider'],
-): void {
+): Promise<void> {
   if (op.action === 'SUPPRIMER') {
-    if (externalId !== null) depot.oublierCorrespondance(externalId);
+    if (externalId !== null) await depot.oublierCorrespondance(externalId);
     return;
   }
   const planifiee = parId.get(op.seanceId!);
   if (planifiee === undefined || externalId === null) return;
-  depot.enregistrerCorrespondance({
+  await depot.enregistrerCorrespondance({
     seanceId: planifiee.seance.id,
     externalId,
     provider,
@@ -230,9 +257,18 @@ function appliquerEffet(
   });
 }
 
-/** Reconstruit un apercu ne contenant que les operations en echec. */
+/**
+ * Reconstruit un apercu ne contenant que ce qui reste a faire : les
+ * operations en echec, et celles jamais tentees faute de budget.
+ */
 export function apercuDesEchecs(apercu: ApercuSync, resultat: ResultatSync): ApercuSync {
-  const echouees = resultat.resultats.filter((r) => !r.ok).map((r) => r.operation);
+  const traitees = new Set(resultat.resultats.map((r) => cle(r.operation)));
+  const toutes = [...apercu.aSupprimer, ...apercu.aMettreAJour, ...apercu.aCreer];
+
+  const echouees = [
+    ...resultat.resultats.filter((r) => !r.ok).map((r) => r.operation),
+    ...toutes.filter((o) => !traitees.has(cle(o))),
+  ];
   return {
     ...apercu,
     aCreer: echouees.filter((o) => o.action === 'CREER'),
@@ -240,4 +276,8 @@ export function apercuDesEchecs(apercu: ApercuSync, resultat: ResultatSync): Ape
     aSupprimer: echouees.filter((o) => o.action === 'SUPPRIMER'),
     calcule_le: new Date().toISOString(),
   };
+}
+
+function cle(op: OperationSync): string {
+  return `${op.action}#${op.seanceId ?? ''}#${op.externalId ?? ''}#${op.date}`;
 }

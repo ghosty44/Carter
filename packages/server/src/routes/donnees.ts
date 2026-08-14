@@ -55,24 +55,25 @@ export function routesDonnees(app: FastifyInstance, ctx: Contexte): void {
     }
 
     const activites = await provider.listerActivites(corps.debut, corps.fin);
-    for (const a of activites) ctx.realise.enregistrer(a);
+    // Import provider : ne jamais ecraser RPE, ressenti, douleurs, commentaire.
+    for (const a of activites) await ctx.realise.enregistrer(a, { preserverSaisie: true });
 
     const wellness = await provider.listerWellness(corps.debut, corps.fin);
-    for (const w of wellness) ctx.wellness.enregistrer(w);
+    for (const w of wellness) await ctx.wellness.enregistrer(w);
 
-    const plan = ctx.plans.courant();
+    const plan = await ctx.plans.courant();
     let appliques = 0;
     let aConfirmer: ReturnType<typeof proposerRapprochements> = [];
 
     if (plan !== null) {
       const propositions = proposerRapprochements(
         plan,
-        ctx.realise.surPeriode(corps.debut, corps.fin),
+        await ctx.realise.surPeriode(corps.debut, corps.fin),
       );
 
       if (corps.rapprocher) {
         for (const p of propositions.filter((x) => x.certain)) {
-          ctx.realise.rattacher(p.realiseeId, p.seanceId);
+          await ctx.realise.rattacher(p.realiseeId, p.seanceId);
           appliques += 1;
         }
       }
@@ -89,16 +90,16 @@ export function routesDonnees(app: FastifyInstance, ctx: Contexte): void {
 
   app.get<{ Querystring: z.infer<typeof Plage> }>('/api/donnees/realisees', async (requete) => {
     const { debut, fin } = plageParDefaut(Plage.parse(requete.query));
-    return { realisees: ctx.realise.surPeriode(debut, fin) };
+    return { realisees: await ctx.realise.surPeriode(debut, fin) };
   });
 
   /** Saisie du ressenti apres une sortie. */
   app.patch<{ Params: { id: string } }>('/api/donnees/realisees/:id', async (requete) => {
     const corps = CorpsRessenti.parse(requete.body);
-    const existante = ctx.realise.parId(requete.params.id);
+    const existante = await ctx.realise.parId(requete.params.id);
     if (existante === null) throw new ErreurHttp(404, 'Seance realisee introuvable');
 
-    ctx.realise.enregistrer({
+    await ctx.realise.enregistrer({
       ...existante,
       rpe: corps.rpe !== undefined ? corps.rpe : existante.rpe,
       ressenti: corps.ressenti !== undefined ? corps.ressenti : existante.ressenti,
@@ -106,7 +107,7 @@ export function routesDonnees(app: FastifyInstance, ctx: Contexte): void {
       commentaire: corps.commentaire ?? existante.commentaire,
     });
 
-    return { realisee: ctx.realise.parId(requete.params.id) };
+    return { realisee: await ctx.realise.parId(requete.params.id) };
   });
 
   /** Saisie manuelle d'une seance realisee, quand aucun provider ne la remonte. */
@@ -128,7 +129,7 @@ export function routesDonnees(app: FastifyInstance, ctx: Contexte): void {
     const corps = Corps.parse(requete.body);
     const id = `manuel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-    ctx.realise.enregistrer({
+    await ctx.realise.enregistrer({
       ...corps,
       id,
       source: 'MANUEL',
@@ -139,7 +140,7 @@ export function routesDonnees(app: FastifyInstance, ctx: Contexte): void {
       allure_gap_s_km: null,
     });
 
-    return { realisee: ctx.realise.parId(id) };
+    return { realisee: await ctx.realise.parId(id) };
   });
 
   /** Rattachement manuel, ou correction d'un rapprochement automatique. */
@@ -150,54 +151,54 @@ export function routesDonnees(app: FastifyInstance, ctx: Contexte): void {
     });
     const corps = Corps.parse(requete.body);
 
-    if (ctx.realise.parId(corps.realisee_id) === null) {
+    if ((await ctx.realise.parId(corps.realisee_id)) === null) {
       throw new ErreurHttp(404, 'Seance realisee introuvable');
     }
 
-    ctx.realise.rattacher(corps.realisee_id, corps.seance_id);
-    return { realisee: ctx.realise.parId(corps.realisee_id) };
+    await ctx.realise.rattacher(corps.realisee_id, corps.seance_id);
+    return { realisee: await ctx.realise.parId(corps.realisee_id) };
   });
 
   /** Propositions de rapprochement en attente. */
   app.get<{ Querystring: z.infer<typeof Plage> }>(
     '/api/donnees/rapprochements',
     async (requete) => {
-      const plan = planRequis(ctx);
+      const plan = await planRequis(ctx);
       const { debut, fin } = plageParDefaut(Plage.parse(requete.query));
       return {
-        propositions: proposerRapprochements(plan, ctx.realise.surPeriode(debut, fin)),
+        propositions: proposerRapprochements(plan, await ctx.realise.surPeriode(debut, fin)),
       };
     },
   );
 
   /** Prevu contre realise, semaine par semaine. */
   app.get('/api/donnees/comparaison', async () => {
-    const plan = planRequis(ctx);
+    const plan = await planRequis(ctx);
     const today = aujourdhui();
     const debut = plan.blocs[0]?.date_debut ?? today;
 
     return {
-      comparaisons: comparerParSemaine(plan, ctx.realise.surPeriode(debut, today), today),
+      comparaisons: comparerParSemaine(plan, await ctx.realise.surPeriode(debut, today), today),
     };
   });
 
   app.get<{ Querystring: z.infer<typeof Plage> }>('/api/wellness', async (requete) => {
     const { debut, fin } = plageParDefaut(Plage.parse(requete.query));
-    return { wellness: ctx.wellness.surPeriode(debut, fin) };
+    return { wellness: await ctx.wellness.surPeriode(debut, fin) };
   });
 
   /** Saisie manuelle du wellness : doit marcher sans aucun provider connecte. */
   app.put('/api/wellness', async (requete) => {
     const corps = WellnessSchema.parse(requete.body);
-    ctx.wellness.enregistrer(corps);
-    return { wellness: ctx.wellness.surPeriode(corps.date, corps.date)[0] ?? null };
+    await ctx.wellness.enregistrer(corps);
+    return { wellness: (await ctx.wellness.surPeriode(corps.date, corps.date))[0] ?? null };
   });
 
-  app.get('/api/questions', async () => ({ questions: ctx.questions.ouvertes() }));
+  app.get('/api/questions', async () => ({ questions: await ctx.questions.ouvertes() }));
 
   app.post('/api/questions', async (requete) => {
     const Corps = z.object({ texte: z.string().min(1).max(2000) });
-    ctx.questions.ajouter(Corps.parse(requete.body).texte);
-    return { questions: ctx.questions.ouvertes() };
+    await ctx.questions.ajouter(Corps.parse(requete.body).texte);
+    return { questions: await ctx.questions.ouvertes() };
   });
 }

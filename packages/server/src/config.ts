@@ -13,7 +13,13 @@ const Schema = z.object({
   PORT: z.coerce.number().int().positive().default(8787),
   HOST: z.string().default('0.0.0.0'),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-  DATABASE_PATH: z.string().default('./data/carter.db'),
+  /**
+   * Chaine de connexion Postgres. Sur Vercel + Neon, utiliser l'URL
+   * **poolee** (elle contient `-pooler`) : en serverless, chaque invocation
+   * peut ouvrir sa propre connexion, et le pooler est ce qui evite de saturer
+   * la limite de connexions de la base.
+   */
+  DATABASE_URL: z.string().min(1).optional(),
 
   APP_PASSWORD: z.string().min(1).optional(),
   SESSION_SECRET: z.string().min(16).optional(),
@@ -26,6 +32,12 @@ const Schema = z.object({
   SYNC_WINDOW_WEEKS: z.coerce.number().int().min(1).max(52).default(6),
   SYNC_TYPES: listeTypes.default('FOOTING,SORTIE_LONGUE,COTES,SEUIL,RENFO'),
   SYNC_RATE_LIMIT_MS: z.coerce.number().int().min(0).default(350),
+  /**
+   * Budget accorde a une application de synchro, en millisecondes.
+   * Doit rester en dessous du `maxDuration` de la fonction Vercel (60 s),
+   * avec de la marge pour la reponse HTTP.
+   */
+  SYNC_BUDGET_MS: z.coerce.number().int().min(1000).default(45_000),
 
   GARMIN_ENABLED: z
     .string()
@@ -47,6 +59,14 @@ function construire(): Config {
   }
 
   const c = parse.data;
+
+  if (!c.DATABASE_URL) {
+    throw new Error(
+      'DATABASE_URL est obligatoire.\n' +
+        'Sur Vercel : ajoute une base Neon au projet, la variable est injectee automatiquement.\n' +
+        'En local : cree une base Neon gratuite et copie son URL poolee dans .env.',
+    );
+  }
 
   // L'app est hebergee en ligne : sans mot de passe, le plan et les donnees
   // de sante sont publics. On refuse de demarrer plutot que d'exposer.
