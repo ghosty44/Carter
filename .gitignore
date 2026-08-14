@@ -23,9 +23,12 @@ Thumbs.db
 *.swp
 
 # Carter
-data/*.db
-data/*.db-wal
-data/*.db-shm
-data/backups/
+**/data/*.db
+**/data/*.db-wal
+**/data/*.db-shm
+**/data/backups/
 packages/*/dist/
 *.tsbuildinfo
+
+# Types generes
+packages/web/dist-types/

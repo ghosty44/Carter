@@ -286,3 +286,53 @@ describe('les alertes ne modifient jamais le plan', () => {
     expect(JSON.stringify(plan)).toBe(avant);
   });
 });
+
+describe('alerte volume — comparaison apres une semaine allegee', () => {
+  it('ne se declenche pas mecaniquement au retour de decharge', () => {
+    // Reproduit le bloc 1 : 2h00 en S3, 1h20 de decharge en S4, 2h10 en S5.
+    const plan = planTest([
+      [{ id: 'a', jour: 1, duree: 100 }],
+      [{ id: 'b', jour: 1, duree: 120 }],
+      [{ id: 'c', jour: 1, duree: 80 }],
+      [{ id: 'd', jour: 1, duree: 130 }],
+    ]);
+    plan.blocs[0]!.semaines[2]!.type = 'ALLEGEE';
+
+    const alertes = calculerAlertes({ plan, ...VIDE }).filter(
+      (a) => a.code === 'VOLUME_HAUSSE_10PCT',
+    );
+
+    // S4 est comparee a S2 (120 min), pas a la decharge S3 (80 min) :
+    // 130 contre 120 fait +8 %, sous le seuil.
+    expect(alertes.map((a) => a.details.semaine)).not.toContain(4);
+  });
+
+  it('compare bien a la derniere semaine de charge et le dit', () => {
+    const plan = planTest([
+      [{ id: 'a', jour: 1, duree: 100 }],
+      [{ id: 'b', jour: 1, duree: 60 }],
+      [{ id: 'c', jour: 1, duree: 130 }],
+    ]);
+    plan.blocs[0]!.semaines[1]!.type = 'ALLEGEE';
+
+    const alertes = calculerAlertes({ plan, ...VIDE }).filter(
+      (a) => a.code === 'VOLUME_HAUSSE_10PCT',
+    );
+
+    expect(alertes).toHaveLength(1);
+    expect(alertes[0]!.details.semaine_reference).toBe(1);
+    expect(alertes[0]!.details.hausse_pct).toBe(30);
+    expect(alertes[0]!.message).toContain('comparee a la semaine 1');
+  });
+
+  it('ne signale jamais une semaine allegee comme une hausse', () => {
+    const plan = planTest([
+      [{ id: 'a', jour: 1, duree: 60 }],
+      [{ id: 'b', jour: 1, duree: 200 }],
+    ]);
+    plan.blocs[0]!.semaines[1]!.type = 'ALLEGEE';
+
+    const alertes = calculerAlertes({ plan, ...VIDE });
+    expect(alertes.filter((a) => a.code === 'VOLUME_HAUSSE_10PCT')).toHaveLength(0);
+  });
+});

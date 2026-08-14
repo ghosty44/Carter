@@ -34,34 +34,61 @@ export function calculerAlertes(entrees: EntreesAlertes): Alerte[] {
   ];
 }
 
-/** Volume hebdomadaire en hausse de plus de 10 % par rapport a la semaine precedente. */
+/** Semaines dont le volume est volontairement reduit : pas une base de comparaison. */
+const SEMAINES_DECHARGE = new Set(['ALLEGEE', 'RECUPERATION', 'AFFUTAGE']);
+
+/**
+ * Volume hebdomadaire en hausse de plus de 10 %.
+ *
+ * ECART ASSUME PAR RAPPORT A UNE LECTURE LITTERALE DU BRIEF : la comparaison
+ * ne se fait pas toujours avec la semaine immediatement precedente. Quand
+ * celle-ci est une semaine allegee, on compare a la derniere semaine de
+ * charge.
+ *
+ * Sinon la regle se declenche mecaniquement apres chaque decharge — le bloc 1
+ * passe de 1h20 en semaine 4 a 2h10 en semaine 5, soit +63 %, ce qui est le
+ * fonctionnement normal d'une periodisation et non un signal. Une alerte qui
+ * se declenche a chaque cycle est une alerte qu'on apprend a ignorer, et le
+ * jour ou la hausse est reellement anormale, elle passe inapercue.
+ */
 function volumeEnHausse({ plan, today }: EntreesAlertes): Alerte[] {
   const semaines = comparerParSemaine(plan, [], today).map((c) => c.semaine);
   const alertes: Alerte[] = [];
 
   for (let i = 1; i < semaines.length; i++) {
-    const precedente = semaines[i - 1]!;
     const courante = semaines[i]!;
-    if (precedente.volume_course_min === 0) continue;
+    if (SEMAINES_DECHARGE.has(courante.type)) continue; // une decharge ne "monte" pas
+
+    // Derniere semaine non allegee avant celle-ci.
+    const reference = semaines
+      .slice(0, i)
+      .reverse()
+      .find((s) => !SEMAINES_DECHARGE.has(s.type) && s.volume_course_min > 0);
+
+    if (reference === undefined) continue;
 
     const hausse =
-      ((courante.volume_course_min - precedente.volume_course_min) /
-        precedente.volume_course_min) *
+      ((courante.volume_course_min - reference.volume_course_min) /
+        reference.volume_course_min) *
       100;
 
     if (hausse <= 10) continue;
+
+    const contigue = reference.numero_global === courante.numero_global - 1;
 
     alertes.push({
       code: 'VOLUME_HAUSSE_10PCT',
       gravite: hausse > 20 ? 'ATTENTION' : 'INFO',
       message:
         `Semaine ${courante.numero_global} : volume en hausse de ${Math.round(hausse)} % ` +
-        `(${formatDuree(precedente.volume_course_min)} puis ${formatDuree(courante.volume_course_min)}). ` +
-        'La regle des 10 % est un repere, pas une loi, mais une hausse repetee sur plusieurs semaines use les tendons.',
+        `(${formatDuree(reference.volume_course_min)} puis ${formatDuree(courante.volume_course_min)}` +
+        `${contigue ? '' : `, comparee a la semaine ${reference.numero_global}`}). ` +
+        'La regle des 10 % est un repere, pas une loi, mais une hausse repetee use les tendons.',
       reference: courante.date_debut,
       details: {
         semaine: courante.numero_global,
-        volume_precedent_min: precedente.volume_course_min,
+        semaine_reference: reference.numero_global,
+        volume_reference_min: reference.volume_course_min,
         volume_courant_min: courante.volume_course_min,
         hausse_pct: Math.round(hausse),
       },
