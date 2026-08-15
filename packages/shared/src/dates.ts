@@ -1,4 +1,4 @@
-import type { IsoDate } from './plan.js';
+import type { IsoDate } from './modele.js';
 
 const MS_JOUR = 86_400_000;
 
@@ -25,29 +25,19 @@ export function diffJours(a: IsoDate, b: IsoDate): number {
 /** Lundi de la semaine contenant `iso`. */
 export function lundiDeLaSemaine(iso: IsoDate): IsoDate {
   const jour = parseIso(iso).getUTCDay(); // 0 = dimanche
-  const recul = jour === 0 ? 6 : jour - 1;
-  return ajouterJours(iso, -recul);
+  return ajouterJours(iso, jour === 0 ? -6 : -(jour - 1));
 }
 
-/** Date du jour dans le fuseau local de la machine, au format `YYYY-MM-DD`. */
+/**
+ * Date du jour dans le fuseau local de la machine.
+ *
+ * Volontairement les composantes locales et non UTC : a 23 h a Paris en ete,
+ * `toISOString()` renvoie deja le lendemain, et une seance faite le soir
+ * apparaitrait au mauvais jour.
+ */
 export function aujourdhui(maintenant: Date = new Date()): IsoDate {
   const an = maintenant.getFullYear();
   const mois = String(maintenant.getMonth() + 1).padStart(2, '0');
   const jour = String(maintenant.getDate()).padStart(2, '0');
   return `${an}-${mois}-${jour}`;
-}
-
-const JOURS_FR = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'];
-
-/** Nom du jour a partir d'un offset 0 = lundi. */
-export function nomJour(offset: number): string {
-  return JOURS_FR[offset] ?? `jour ${offset}`;
-}
-
-/** Formate une duree en minutes vers `1h40` ou `45 min`. */
-export function formatDuree(minutes: number): string {
-  if (minutes < 60) return `${minutes} min`;
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  return m === 0 ? `${h}h` : `${h}h${String(m).padStart(2, '0')}`;
 }

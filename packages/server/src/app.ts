@@ -7,23 +7,12 @@ import { ZodError } from 'zod';
 import { chargerConfig, type Config } from './config.js';
 import { enregistrerAuth } from './auth.js';
 import { migrer, ouvrirBase } from './db/index.js';
-import {
-  DepotPlan,
-  DepotQuestions,
-  DepotRealise,
-  DepotSessionGarminPg,
-  DepotSyncPg,
-  DepotWellness,
-} from './db/depots.js';
-import { construireProviders } from './providers/registry.js';
-import { ErreurProvider } from './providers/types.js';
-import { ProviderGarminDirect } from './providers/garmin-direct.js';
+import { DepotActivites, DepotSessionGarminPg, DepotWellness } from './db/depots.js';
+import { ClientGarmin } from './garmin/client.js';
+import { ErreurGarmin } from './garmin/erreurs.js';
 import { ErreurHttp, type Contexte } from './routes/contexte.js';
-import { routesPlan } from './routes/plan.js';
-import { routesSync } from './routes/sync.js';
-import { routesDonnees } from './routes/donnees.js';
-import { routesExports } from './routes/exports.js';
 import { routesGarmin } from './routes/garmin.js';
+import { routesDonnees } from './routes/donnees.js';
 
 export interface OptionsApp {
   config?: Config;
@@ -35,8 +24,7 @@ export interface OptionsApp {
  * Construit l'application sans l'ecouter.
  *
  * Separee de `index.ts` pour que la meme app tourne dans deux contextes : un
- * serveur long-vivant en local, et une fonction serverless sur Vercel. Rien
- * ici ne suppose l'un ou l'autre.
+ * serveur long-vivant en local, et une fonction serverless sur Vercel.
  */
 export async function construireApp(options: OptionsApp = {}): Promise<FastifyInstance> {
   const config = options.config ?? chargerConfig();
@@ -47,48 +35,32 @@ export async function construireApp(options: OptionsApp = {}): Promise<FastifyIn
   const ctx: Contexte = {
     config,
     db,
-    plans: new DepotPlan(db),
-    sync: new DepotSyncPg(db),
-    realise: new DepotRealise(db),
+    activites: new DepotActivites(db),
     wellness: new DepotWellness(db),
-    questions: new DepotQuestions(db),
-    providers: construireProviders(
-      config,
-      new DepotSessionGarminPg(db, config.SESSION_SECRET),
-    ),
+    garmin: new ClientGarmin({
+      depot: new DepotSessionGarminPg(db, config.SESSION_SECRET),
+      active: config.GARMIN_ENABLED,
+    }),
   };
 
   const app = Fastify({
     logger: {
       level: config.NODE_ENV === 'production' ? 'info' : 'debug',
-      // Ne jamais journaliser les entetes : l'Authorization vers Intervals.icu
-      // et le cookie de session s'y trouvent.
+      // Ne jamais journaliser les entetes : le jeton Garmin et le cookie de
+      // session s'y trouvent.
       redact: ['req.headers.authorization', 'req.headers.cookie'],
     },
-    bodyLimit: 8 * 1024 * 1024,
-    // Derriere le proxy Vercel, l'IP et le protocole reels sont dans les
-    // en-tetes X-Forwarded-*. Sans ca, le cookie `secure` et les journaux
-    // voient l'adresse interne du proxy.
+    bodyLimit: 1024 * 1024,
+    // Derriere un proxy, l'IP et le protocole reels sont dans les en-tetes
+    // X-Forwarded-*. Sans ca, le cookie `secure` voit l'adresse interne.
     trustProxy: true,
   });
 
   await app.register(cookie);
   enregistrerAuth(app, config);
 
-  routesPlan(app, ctx);
-  routesSync(app, ctx);
-  routesDonnees(app, ctx);
-  routesExports(app, ctx);
   routesGarmin(app, ctx);
-
-  // La session Garmin est chargee une fois, pour que `estConfigure()` puisse
-  // rester synchrone comme le veut l'interface PlanSyncProvider.
-  const garmin = ctx.providers.get('GARMIN_DIRECT');
-  if (garmin instanceof ProviderGarminDirect) {
-    await garmin.initialiser().catch((e: unknown) => {
-      app.log.warn({ err: e }, 'session Garmin illisible, connexion a refaire');
-    });
-  }
+  routesDonnees(app, ctx);
 
   app.setErrorHandler((erreur, _requete, reponse) => {
     if (erreur instanceof ErreurHttp) {
@@ -110,8 +82,10 @@ export async function construireApp(options: OptionsApp = {}): Promise<FastifyIn
       });
     }
 
-    if (erreur instanceof ErreurProvider) {
-      return reponse.code(erreur.statut && erreur.statut < 500 ? 409 : 502).send({
+    if (erreur instanceof ErreurGarmin) {
+      // 409 pour ce que l'utilisateur peut corriger (session, identifiants),
+      // 502 quand c'est Garmin qui va mal.
+      return reponse.code(erreur.statut !== null && erreur.statut < 500 ? 409 : 502).send({
         erreur: erreur.message,
         details: { reessayable: erreur.reessayable, statut: erreur.statut },
       });
@@ -125,7 +99,6 @@ export async function construireApp(options: OptionsApp = {}): Promise<FastifyIn
     const racineWeb = join(import.meta.dirname, '..', '..', 'web', 'dist');
     if (existsSync(racineWeb)) {
       await app.register(statique, { root: racineWeb, prefix: '/' });
-
       app.setNotFoundHandler((requete, reponse) => {
         if (requete.url.startsWith('/api/')) {
           return reponse.code(404).send({ erreur: 'Route inconnue' });

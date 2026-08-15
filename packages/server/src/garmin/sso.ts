@@ -1,11 +1,11 @@
 import { z } from 'zod';
-import { ErreurProvider } from './types.js';
+import { ErreurGarmin } from './erreurs.js';
 import {
   enteteOAuth1,
   parserFormulaire,
   type Consommateur,
   type JetonOAuth1,
-} from './garmin-direct-oauth.js';
+} from './oauth.js';
 
 /**
  * =========================================================================
@@ -145,7 +145,7 @@ export class SessionGarminSso {
     bocal.absorber(page);
 
     if (!page.ok) {
-      throw new ErreurProvider(interception(page.status), page.status);
+      throw new ErreurGarmin(interception(page.status), page.status);
     }
 
     const csrf = extraireCsrf(await page.text());
@@ -153,7 +153,7 @@ export class SessionGarminSso {
       // Page servie, mais pas celle attendue : filtrage reseau ou page
       // d'interstitiel anti-bot. Distinguer ce cas du « formulaire modifie »
       // evite de partir chercher un bug qui n'existe pas.
-      throw new ErreurProvider(
+      throw new ErreurGarmin(
         "Page de connexion Garmin inexploitable : aucun jeton anti-CSRF trouve.\n" +
           interception(page.status),
         page.status,
@@ -190,10 +190,10 @@ export class SessionGarminSso {
 
     const ticket = extraireTicket(html);
     if (ticket === null) {
-      throw new ErreurProvider(
+      throw new ErreurGarmin(
         identifiantsProbablementFaux(html)
           ? 'Identifiant ou mot de passe Garmin refuse.'
-          : "Garmin n'a pas renvoye de ticket de service. Le formulaire de connexion a probablement change : voir garmin-direct-sso.ts.",
+          : "Garmin n'a pas renvoye de ticket de service. Le formulaire de connexion a probablement change : voir src/garmin/sso.ts.",
         401,
       );
     }
@@ -227,7 +227,7 @@ export class SessionGarminSso {
 
     const ticket = extraireTicket(await reponse.text());
     if (ticket === null) {
-      throw new ErreurProvider('Code de verification Garmin refuse.', 401);
+      throw new ErreurGarmin('Code de verification Garmin refuse.', 401);
     }
 
     return this.echangerTicket(ticket);
@@ -254,7 +254,7 @@ export class SessionGarminSso {
     });
 
     if (!reponse.ok) {
-      throw new ErreurProvider(
+      throw new ErreurGarmin(
         `Rafraichissement du jeton Garmin refuse (${reponse.status}). Reconnecte-toi depuis l'app.`,
         reponse.status,
       );
@@ -267,7 +267,7 @@ export class SessionGarminSso {
     };
 
     if (!corps.access_token) {
-      throw new ErreurProvider("Garmin n'a pas renvoye de jeton d'acces.", null);
+      throw new ErreurGarmin("Garmin n'a pas renvoye de jeton d'acces.", null);
     }
 
     return {
@@ -296,7 +296,7 @@ export class SessionGarminSso {
     });
 
     if (!reponsePre.ok) {
-      throw new ErreurProvider(
+      throw new ErreurGarmin(
         `Garmin a refuse l'echange du ticket (${reponsePre.status}).`,
         reponsePre.status,
       );
@@ -309,7 +309,7 @@ export class SessionGarminSso {
     };
 
     if (oauth1.oauth_token === '') {
-      throw new ErreurProvider("Garmin n'a pas renvoye de jeton OAuth 1.", null);
+      throw new ErreurGarmin("Garmin n'a pas renvoye de jeton OAuth 1.", null);
     }
 
     return { oauth1, oauth2: await this.rafraichir(oauth1) };
@@ -322,7 +322,7 @@ export class SessionGarminSso {
 
     const reponse = await this.appeler(this.urlConsommateur);
     if (!reponse.ok) {
-      throw new ErreurProvider(
+      throw new ErreurGarmin(
         "Impossible de recuperer les clefs consommateur de l'app mobile Garmin.",
         reponse.status,
       );
@@ -336,7 +336,7 @@ export class SessionGarminSso {
     try {
       return await this.fetch(url, init);
     } catch (e) {
-      throw new ErreurProvider(
+      throw new ErreurGarmin(
         `Garmin injoignable : ${e instanceof Error ? e.message : String(e)}`,
         null,
       );

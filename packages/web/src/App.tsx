@@ -1,36 +1,37 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, ErreurApi, type EtatPlan } from './api.js';
+import { api, ErreurApi } from './api.js';
 import { Chargement, ErreurAffichee } from './composants.js';
-import { VuePlan } from './vues/Plan.js';
-import { VueSynchro } from './vues/Synchro.js';
-import { VueRessenti } from './vues/Ressenti.js';
-import { VueCoach } from './vues/Coach.js';
+import { VueSeances } from './vues/Seances.js';
+import { VueStats } from './vues/Stats.js';
+import { VueCompte } from './vues/Compte.js';
 
-type Onglet = 'plan' | 'synchro' | 'ressenti' | 'coach';
+type Onglet = 'seances' | 'stats' | 'compte';
 
 const ONGLETS: { cle: Onglet; libelle: string }[] = [
-  { cle: 'plan', libelle: 'Plan' },
-  { cle: 'synchro', libelle: 'Synchro' },
-  { cle: 'ressenti', libelle: 'Ressenti' },
-  { cle: 'coach', libelle: 'Coach' },
+  { cle: 'seances', libelle: 'Séances' },
+  { cle: 'stats', libelle: 'Stats' },
+  { cle: 'compte', libelle: 'Compte' },
 ];
 
 export function App() {
-  const [onglet, setOnglet] = useState<Onglet>('plan');
-  const [etat, setEtat] = useState<EtatPlan | null>(null);
+  const [onglet, setOnglet] = useState<Onglet>('seances');
   const [authentifie, setAuthentifie] = useState<boolean | null>(null);
+  const [connecte, setConnecte] = useState(false);
   const [erreur, setErreur] = useState<unknown>(null);
+  // Force le remontage des vues apres une recuperation de donnees.
+  const [version, setVersion] = useState(0);
 
   const charger = useCallback(async () => {
     try {
-      const r = await api.plan();
-      setEtat(r);
+      const r = await api.garmin();
+      setConnecte(r.garmin.connecte);
       setAuthentifie(true);
       setErreur(null);
     } catch (e) {
       if (e instanceof ErreurApi && e.statut === 401) {
         setAuthentifie(false);
       } else {
+        setAuthentifie(true);
         setErreur(e);
       }
     }
@@ -44,18 +45,22 @@ export function App() {
     return <Connexion onConnecte={() => void charger()} />;
   }
 
-  if (authentifie === null && etat === null && erreur === null) {
-    return <Chargement quoi="de l'application" />;
-  }
+  if (authentifie === null) return <Chargement quoi="de l’application" />;
 
   return (
     <>
       <ErreurAffichee erreur={erreur} />
 
-      {onglet === 'plan' && <VuePlan etat={etat} recharger={() => void charger()} />}
-      {onglet === 'synchro' && <VueSynchro />}
-      {onglet === 'ressenti' && <VueRessenti etat={etat} />}
-      {onglet === 'coach' && <VueCoach recharger={() => void charger()} />}
+      {onglet === 'seances' && <VueSeances key={version} connecte={connecte} />}
+      {onglet === 'stats' && <VueStats key={version} />}
+      {onglet === 'compte' && (
+        <VueCompte
+          onChangement={() => {
+            setVersion((v) => v + 1);
+            void charger();
+          }}
+        />
+      )}
 
       <nav className="onglets">
         {ONGLETS.map((o) => (
@@ -95,7 +100,7 @@ function Connexion({ onConnecte }: { onConnecte: () => void }) {
   return (
     <form onSubmit={(e) => void envoyer(e)} style={{ maxWidth: 340, margin: '80px auto' }}>
       <h1>Carter</h1>
-      <p className="doux">Plan d'entrainement trail. Acces protege.</p>
+      <p className="doux">Tes séances et tes stats Garmin.</p>
       <ErreurAffichee erreur={erreur} />
       <label>
         <span>Mot de passe</span>

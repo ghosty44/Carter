@@ -1,204 +1,65 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
-  DouleurSchema,
   IsoDate,
-  NomProvider,
-  WellnessSchema,
   ajouterJours,
   aujourdhui,
+  parSemaine,
+  records,
+  repartition,
+  totaux,
 } from '@carter/shared';
-import { comparerParSemaine } from '../analyse/comparaison.js';
-import { proposerRapprochements } from '../analyse/rapprochement.js';
-import { ErreurHttp, planRequis, providerRequis, type Contexte } from './contexte.js';
-
-const Plage = z.object({
-  debut: IsoDate.optional(),
-  fin: IsoDate.optional(),
-});
-
-const CorpsImport = z.object({
-  provider: NomProvider,
-  debut: IsoDate,
-  fin: IsoDate,
-  /** Applique automatiquement les rapprochements sans ambiguite. */
-  rapprocher: z.boolean().default(true),
-});
-
-/** Saisie post-seance : trois champs, trois clics. */
-const CorpsRessenti = z.object({
-  rpe: z.number().int().min(1).max(10).nullable().optional(),
-  ressenti: z.number().int().min(1).max(5).nullable().optional(),
-  douleurs: z.array(DouleurSchema).optional(),
-  commentaire: z.string().max(4000).optional(),
-});
-
-function plageParDefaut(query: z.infer<typeof Plage>): { debut: string; fin: string } {
-  const today = aujourdhui();
-  return {
-    debut: query.debut ?? ajouterJours(today, -56),
-    fin: query.fin ?? today,
-  };
-}
+import { ErreurHttp, type Contexte } from './contexte.js';
 
 export function routesDonnees(app: FastifyInstance, ctx: Contexte): void {
-  /** Import des activites et du wellness depuis un provider. */
-  app.post('/api/donnees/importer', async (requete) => {
-    const corps = CorpsImport.parse(requete.body);
-    const provider = providerRequis(ctx, corps.provider);
-
-    if (!provider.capacites().lire) {
-      throw new ErreurHttp(409, `${provider.libelle} ne sait pas lire de donnees`);
-    }
-    if (!provider.estConfigure()) {
-      throw new ErreurHttp(409, `${provider.libelle} n'est pas configure`);
-    }
-
-    const activites = await provider.listerActivites(corps.debut, corps.fin);
-    // Import provider : ne jamais ecraser RPE, ressenti, douleurs, commentaire.
-    for (const a of activites) await ctx.realise.enregistrer(a, { preserverSaisie: true });
-
-    const wellness = await provider.listerWellness(corps.debut, corps.fin);
-    for (const w of wellness) await ctx.wellness.enregistrer(w);
-
-    const plan = await ctx.plans.courant();
-    let appliques = 0;
-    let aConfirmer: ReturnType<typeof proposerRapprochements> = [];
-
-    if (plan !== null) {
-      const propositions = proposerRapprochements(
-        plan,
-        await ctx.realise.surPeriode(corps.debut, corps.fin),
-      );
-
-      if (corps.rapprocher) {
-        for (const p of propositions.filter((x) => x.certain)) {
-          await ctx.realise.rattacher(p.realiseeId, p.seanceId);
-          appliques += 1;
-        }
-      }
-      aConfirmer = propositions.filter((p) => !p.certain);
-    }
-
-    return {
-      activites_importees: activites.length,
-      wellness_importe: wellness.length,
-      rapprochements_appliques: appliques,
-      rapprochements_a_confirmer: aConfirmer,
-    };
+  /** Liste des seances, de la plus recente a la plus ancienne. */
+  app.get<{ Querystring: { limite?: string } }>('/api/activites', async (requete) => {
+    const limite = Math.min(Math.max(Number(requete.query.limite ?? 50), 1), 300);
+    return { activites: await ctx.activites.recentes(limite) };
   });
 
-  app.get<{ Querystring: z.infer<typeof Plage> }>('/api/donnees/realisees', async (requete) => {
-    const { debut, fin } = plageParDefaut(Plage.parse(requete.query));
-    return { realisees: await ctx.realise.surPeriode(debut, fin) };
+  app.get<{ Params: { id: string } }>('/api/activites/:id', async (requete) => {
+    const activite = await ctx.activites.parId(requete.params.id);
+    if (activite === null) throw new ErreurHttp(404, 'Seance introuvable');
+    return { activite };
   });
 
-  /** Saisie du ressenti apres une sortie. */
-  app.patch<{ Params: { id: string } }>('/api/donnees/realisees/:id', async (requete) => {
-    const corps = CorpsRessenti.parse(requete.body);
-    const existante = await ctx.realise.parId(requete.params.id);
-    if (existante === null) throw new ErreurHttp(404, 'Seance realisee introuvable');
-
-    await ctx.realise.enregistrer({
-      ...existante,
-      rpe: corps.rpe !== undefined ? corps.rpe : existante.rpe,
-      ressenti: corps.ressenti !== undefined ? corps.ressenti : existante.ressenti,
-      douleurs: corps.douleurs ?? existante.douleurs,
-      commentaire: corps.commentaire ?? existante.commentaire,
-    });
-
-    return { realisee: await ctx.realise.parId(requete.params.id) };
-  });
-
-  /** Saisie manuelle d'une seance realisee, quand aucun provider ne la remonte. */
-  app.post('/api/donnees/realisees', async (requete) => {
-    const Corps = z.object({
-      date: IsoDate,
-      seance_id: z.string().nullable().default(null),
-      nom: z.string().max(300).default(''),
-      type_sport: z.string().max(60).default('Run'),
-      duree_s: z.number().int().nonnegative(),
-      distance_m: z.number().nonnegative().default(0),
-      denivele_m: z.number().nonnegative().default(0),
-      rpe: z.number().int().min(1).max(10).nullable().default(null),
-      ressenti: z.number().int().min(1).max(5).nullable().default(null),
-      douleurs: z.array(DouleurSchema).default([]),
-      commentaire: z.string().max(4000).default(''),
-    });
-
-    const corps = Corps.parse(requete.body);
-    const id = `manuel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-    await ctx.realise.enregistrer({
-      ...corps,
-      id,
-      source: 'MANUEL',
-      external_id: null,
-      fc_moy: null,
-      fc_max: null,
-      allure_moy_s_km: null,
-      allure_gap_s_km: null,
-    });
-
-    return { realisee: await ctx.realise.parId(id) };
-  });
-
-  /** Rattachement manuel, ou correction d'un rapprochement automatique. */
-  app.post('/api/donnees/rapprocher', async (requete) => {
-    const Corps = z.object({
-      realisee_id: z.string(),
-      seance_id: z.string().nullable(),
-    });
-    const corps = Corps.parse(requete.body);
-
-    if ((await ctx.realise.parId(corps.realisee_id)) === null) {
-      throw new ErreurHttp(404, 'Seance realisee introuvable');
-    }
-
-    await ctx.realise.rattacher(corps.realisee_id, corps.seance_id);
-    return { realisee: await ctx.realise.parId(corps.realisee_id) };
-  });
-
-  /** Propositions de rapprochement en attente. */
-  app.get<{ Querystring: z.infer<typeof Plage> }>(
-    '/api/donnees/rapprochements',
-    async (requete) => {
-      const plan = await planRequis(ctx);
-      const { debut, fin } = plageParDefaut(Plage.parse(requete.query));
-      return {
-        propositions: proposerRapprochements(plan, await ctx.realise.surPeriode(debut, fin)),
-      };
-    },
-  );
-
-  /** Prevu contre realise, semaine par semaine. */
-  app.get('/api/donnees/comparaison', async () => {
-    const plan = await planRequis(ctx);
+  /**
+   * Tout ce qu'affiche l'ecran Stats, en une requete.
+   *
+   * Les agregats sont calcules ici plutot que dans le navigateur : c'est la
+   * meme fonction partagee que celle des tests, et ca evite de transferer
+   * plusieurs centaines d'activites pour en tirer douze totaux.
+   */
+  app.get<{ Querystring: { semaines?: string } }>('/api/stats', async (requete) => {
+    const nbSemaines = Math.min(Math.max(Number(requete.query.semaines ?? 12), 1), 52);
     const today = aujourdhui();
-    const debut = plan.blocs[0]?.date_debut ?? today;
+
+    // On remonte au lundi de la premiere semaine voulue, pas a J-n*7 : sinon
+    // la semaine la plus ancienne est tronquee et parait anormalement basse.
+    const debut = ajouterJours(today, -(nbSemaines * 7 + 7));
+    const activites = await ctx.activites.surPeriode(debut, today);
+
+    const quatreSemaines = activites.filter((a) => a.date >= ajouterJours(today, -27));
 
     return {
-      comparaisons: comparerParSemaine(plan, await ctx.realise.surPeriode(debut, today), today),
+      semaines: parSemaine(activites, nbSemaines, today),
+      derniers_28_jours: totaux(quatreSemaines),
+      repartition: repartition(quatreSemaines),
+      records: records(activites),
     };
   });
+
+  const Plage = z.object({ debut: IsoDate.optional(), fin: IsoDate.optional() });
 
   app.get<{ Querystring: z.infer<typeof Plage> }>('/api/wellness', async (requete) => {
-    const { debut, fin } = plageParDefaut(Plage.parse(requete.query));
-    return { wellness: await ctx.wellness.surPeriode(debut, fin) };
-  });
-
-  /** Saisie manuelle du wellness : doit marcher sans aucun provider connecte. */
-  app.put('/api/wellness', async (requete) => {
-    const corps = WellnessSchema.parse(requete.body);
-    await ctx.wellness.enregistrer(corps);
-    return { wellness: (await ctx.wellness.surPeriode(corps.date, corps.date))[0] ?? null };
-  });
-
-  app.get('/api/questions', async () => ({ questions: await ctx.questions.ouvertes() }));
-
-  app.post('/api/questions', async (requete) => {
-    const Corps = z.object({ texte: z.string().min(1).max(2000) });
-    await ctx.questions.ajouter(Corps.parse(requete.body).texte);
-    return { questions: await ctx.questions.ouvertes() };
+    const query = Plage.parse(requete.query);
+    const today = aujourdhui();
+    return {
+      wellness: await ctx.wellness.surPeriode(
+        query.debut ?? ajouterJours(today, -29),
+        query.fin ?? today,
+      ),
+    };
   });
 }

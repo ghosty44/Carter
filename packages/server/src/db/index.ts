@@ -5,89 +5,48 @@ const { Pool } = pg;
 export type BaseCarter = pg.Pool;
 
 /**
- * Schema Postgres (Neon).
+ * Schema.
  *
- * Le plan reste stocke en JSON dans une colonne : il est arborescent, toujours
- * lu en entier, et le versionner est plus simple qu'une dizaine de tables a
- * joindre. Les tables relationnelles servent a ce qui se requete par date :
- * realise, wellness, correspondances, journal.
- *
- * `jsonb` n'apporterait rien ici — le contenu n'est jamais interroge par
- * champ, seulement lu et reecrit en entier — et imposerait des conversions a
- * chaque lecture. On garde `text`.
+ * Trois tables seulement : la session Garmin, les activites et la forme du
+ * jour. Les activites sont mises en cache localement plutot que redemandees a
+ * chaque affichage — Garmin est lent, et marteler une API non officielle est
+ * le meilleur moyen de se faire remarquer.
  */
 const MIGRATIONS: { version: number; sql: string }[] = [
   {
     version: 1,
     sql: `
-      CREATE TABLE plan (
-        id           TEXT PRIMARY KEY,
-        contenu      TEXT NOT NULL,
-        version      INTEGER NOT NULL,
-        modifie_le   TEXT NOT NULL
+      CREATE TABLE session_garmin (
+        id                INTEGER PRIMARY KEY DEFAULT 1,
+        jetons_chiffres   TEXT NOT NULL,
+        nom_affichage     TEXT,
+        connecte_le       TEXT NOT NULL,
+        derniere_synchro  TEXT,
+        CONSTRAINT ligne_unique CHECK (id = 1)
       );
 
-      CREATE TABLE plan_version (
-        id           BIGSERIAL PRIMARY KEY,
-        plan_id      TEXT NOT NULL,
-        version      INTEGER NOT NULL,
-        contenu      TEXT NOT NULL,
-        origine      TEXT NOT NULL,
-        commentaire  TEXT NOT NULL DEFAULT '',
-        cree_le      TEXT NOT NULL,
-        UNIQUE (plan_id, version)
+      CREATE TABLE activite (
+        id                  TEXT PRIMARY KEY,
+        date                TEXT NOT NULL,
+        heure               TEXT,
+        nom                 TEXT NOT NULL DEFAULT '',
+        sport               TEXT NOT NULL,
+        sport_garmin        TEXT NOT NULL DEFAULT '',
+        duree_s             INTEGER NOT NULL DEFAULT 0,
+        duree_totale_s      INTEGER NOT NULL DEFAULT 0,
+        distance_m          DOUBLE PRECISION NOT NULL DEFAULT 0,
+        denivele_m          DOUBLE PRECISION NOT NULL DEFAULT 0,
+        denivele_negatif_m  DOUBLE PRECISION NOT NULL DEFAULT 0,
+        fc_moy              INTEGER,
+        fc_max              INTEGER,
+        allure_s_km         DOUBLE PRECISION,
+        vitesse_kmh         DOUBLE PRECISION,
+        calories            INTEGER,
+        cadence_moy         INTEGER,
+        rpe                 INTEGER,
+        charge              DOUBLE PRECISION
       );
-
-      CREATE TABLE correspondance (
-        seance_id         TEXT NOT NULL,
-        provider          TEXT NOT NULL,
-        external_id       TEXT NOT NULL,
-        hash_synchronise  TEXT NOT NULL,
-        synchronise_le    TEXT NOT NULL,
-        PRIMARY KEY (seance_id, provider)
-      );
-      CREATE INDEX idx_correspondance_external
-        ON correspondance (provider, external_id);
-
-      CREATE TABLE journal_sync (
-        id           BIGSERIAL PRIMARY KEY,
-        horodatage   TEXT NOT NULL,
-        provider     TEXT NOT NULL,
-        action       TEXT NOT NULL,
-        seance_id    TEXT,
-        external_id  TEXT,
-        date_seance  TEXT,
-        titre        TEXT NOT NULL DEFAULT '',
-        ok           BOOLEAN NOT NULL,
-        erreur       TEXT,
-        reponse      TEXT
-      );
-      CREATE INDEX idx_journal_horodatage ON journal_sync (horodatage DESC);
-
-      CREATE TABLE seance_realisee (
-        id               TEXT PRIMARY KEY,
-        seance_id        TEXT,
-        date             TEXT NOT NULL,
-        source           TEXT NOT NULL,
-        external_id      TEXT,
-        nom              TEXT NOT NULL DEFAULT '',
-        type_sport       TEXT NOT NULL DEFAULT 'Run',
-        duree_s          INTEGER NOT NULL DEFAULT 0,
-        distance_m       DOUBLE PRECISION NOT NULL DEFAULT 0,
-        denivele_m       DOUBLE PRECISION NOT NULL DEFAULT 0,
-        fc_moy           INTEGER,
-        fc_max           INTEGER,
-        allure_moy_s_km  DOUBLE PRECISION,
-        allure_gap_s_km  DOUBLE PRECISION,
-        rpe              INTEGER,
-        ressenti         INTEGER,
-        douleurs         TEXT NOT NULL DEFAULT '[]',
-        commentaire      TEXT NOT NULL DEFAULT ''
-      );
-      CREATE INDEX idx_realisee_date ON seance_realisee (date);
-      CREATE UNIQUE INDEX idx_realisee_source_external
-        ON seance_realisee (source, external_id)
-        WHERE external_id IS NOT NULL;
+      CREATE INDEX idx_activite_date ON activite (date DESC);
 
       CREATE TABLE wellness (
         date          TEXT PRIMARY KEY,
@@ -95,57 +54,27 @@ const MIGRATIONS: { version: number; sql: string }[] = [
         fc_repos      INTEGER,
         hrv           DOUBLE PRECISION,
         sommeil_h     DOUBLE PRECISION,
-        fatigue_1_5   INTEGER,
-        humeur_1_5    INTEGER,
-        note          TEXT NOT NULL DEFAULT ''
-      );
-
-      CREATE TABLE question_coach (
-        id         BIGSERIAL PRIMARY KEY,
-        texte      TEXT NOT NULL,
-        cree_le    TEXT NOT NULL,
-        repondue   BOOLEAN NOT NULL DEFAULT FALSE
-      );
-
-      /*
-       * Instantanes pris avant chaque operation risquee.
-       *
-       * Sur disque, la sauvegarde etait une copie du fichier SQLite. Sur une
-       * base geree, ce mecanisme n'existe plus : on conserve donc un export
-       * JSON complet du plan et de son historique, qui est ce qu'on ne peut
-       * pas reconstruire. Les activites et le wellness sont, eux,
-       * reimportables depuis le provider.
-       */
-      CREATE TABLE sauvegarde (
-        id       BIGSERIAL PRIMARY KEY,
-        motif    TEXT NOT NULL,
-        cree_le  TEXT NOT NULL,
-        contenu  TEXT NOT NULL
-      );
-      CREATE INDEX idx_sauvegarde_cree_le ON sauvegarde (cree_le DESC);
-    `,
-  },
-  {
-    version: 2,
-    sql: `
-      /*
-       * Session Garmin Connect. Une seule ligne (id = 1).
-       *
-       * On y stocke les jetons OAuth, chiffres, et JAMAIS le mot de passe :
-       * celui-ci ne sert qu'une fois, au moment de l'echange initial, et il
-       * n'est pas conserve. Un jeton compromis se revoque en changeant le mot
-       * de passe Garmin ; un mot de passe stocke compromet le compte entier.
-       */
-      CREATE TABLE session_garmin (
-        id                INTEGER PRIMARY KEY DEFAULT 1,
-        jetons_chiffres   TEXT NOT NULL,
-        nom_affichage     TEXT,
-        connecte_le       TEXT NOT NULL,
-        rafraichi_le      TEXT,
-        CONSTRAINT ligne_unique CHECK (id = 1)
+        body_battery  INTEGER,
+        stress_moy    INTEGER,
+        pas           INTEGER
       );
     `,
   },
+];
+
+/**
+ * Tables de la version precedente de l'app (gestion de plan, synchro,
+ * export coach). Supprimees si elles trainent : elles ne sont plus lues par
+ * personne et personne ne les remplira.
+ */
+const TABLES_OBSOLETES = [
+  'plan',
+  'plan_version',
+  'correspondance',
+  'journal_sync',
+  'seance_realisee',
+  'question_coach',
+  'sauvegarde',
 ];
 
 let poolPartage: pg.Pool | null = null;
@@ -154,16 +83,10 @@ let migrationEnCours: Promise<void> | null = null;
 /**
  * Pool partage entre invocations.
  *
- * En environnement serverless, le module reste charge entre deux requetes sur
- * une meme instance : garder le pool en variable de module evite de rouvrir
- * une connexion a chaque appel. Neon multiplexe derriere son pooler, donc un
- * pool de petite taille suffit pour un usage mono-utilisateur — et evite de
- * consommer la limite de connexions avec des instances qui refroidissent.
- *
- * On utilise `pg` plutot que le driver WebSocket de Neon : il parle le
- * protocole Postgres standard, donc la meme configuration marche contre Neon,
- * contre un Postgres local et contre n'importe quel autre hebergeur. C'est
- * aussi ce qui rend la couche testable pour de vrai.
+ * En serverless, le module reste charge entre deux requetes sur une meme
+ * instance : garder le pool ici evite de rouvrir une connexion a chaque appel.
+ * Petit pool volontairement — un seul utilisateur, et des instances qui
+ * refroidissent sans prevenir consommeraient sinon la limite de connexions.
  */
 export function ouvrirBase(url: string): BaseCarter {
   if (poolPartage !== null) return poolPartage;
@@ -173,13 +96,11 @@ export function ouvrirBase(url: string): BaseCarter {
     max: 3,
     idleTimeoutMillis: 10_000,
     connectionTimeoutMillis: 10_000,
-    // TLS obligatoire des qu'on sort de la machine : la base porte des
-    // donnees de sante. Neon impose deja `sslmode=require` dans son URL.
+    // TLS des qu'on sort de la machine : la base porte des donnees de sante.
     ssl: estLocal(url) ? undefined : { rejectUnauthorized: true },
   });
 
-  // Une erreur sur une connexion inactive ne doit pas faire tomber le
-  // processus : le pool la remplacera a la prochaine requete.
+  // Une erreur sur une connexion inactive ne doit pas tuer le processus.
   poolPartage.on('error', () => undefined);
 
   return poolPartage;
@@ -197,10 +118,9 @@ function estLocal(url: string): boolean {
 /**
  * Applique les migrations manquantes.
  *
- * Idempotent et sur par concurrence : un verrou consultatif Postgres empeche
- * deux invocations simultanees d'appliquer la meme migration. C'est le cas
- * normal au premier deploiement, ou plusieurs requetes arrivent avant que la
- * base soit initialisee.
+ * Verrou consultatif : au premier deploiement, plusieurs requetes arrivent
+ * avant que la base soit initialisee, et deux instances appliqueraient la
+ * meme migration en parallele.
  */
 export async function migrer(db: BaseCarter): Promise<void> {
   if (migrationEnCours !== null) return migrationEnCours;
@@ -208,21 +128,37 @@ export async function migrer(db: BaseCarter): Promise<void> {
   migrationEnCours = (async () => {
     const client = await db.connect();
     try {
-      await client.query(
-        `CREATE TABLE IF NOT EXISTS schema_version (
-           version     INTEGER PRIMARY KEY,
-           applique_le TEXT NOT NULL
-         )`,
-      );
-
-      // 8472531 : identifiant arbitraire mais stable, propre a ce schema.
       await client.query('SELECT pg_advisory_lock($1)', [8472531]);
 
       try {
+        // Nettoyage de l'ancienne app, avant toute chose : son schema porte
+        // des noms de table qui n'entrent pas en conflit, mais qui trainent.
+        for (const table of TABLES_OBSOLETES) {
+          await client.query(`DROP TABLE IF EXISTS ${table} CASCADE`);
+        }
+
+        await client.query(
+          `CREATE TABLE IF NOT EXISTS schema_version (
+             version     INTEGER PRIMARY KEY,
+             applique_le TEXT NOT NULL
+           )`,
+        );
+
         const { rows } = await client.query<{ v: number | null }>(
           'SELECT MAX(version) AS v FROM schema_version',
         );
-        const actuelle = rows[0]?.v ?? 0;
+
+        // L'ancien schema montait a la version 2 avec des tables differentes.
+        // On repart de zero : les seules donnees etaient des jetons Garmin,
+        // que la reconnexion regenere.
+        const ancienSchema = (rows[0]?.v ?? 0) > 0 && !(await tableExiste(client, 'activite'));
+        if (ancienSchema) {
+          await client.query('DROP TABLE IF EXISTS session_garmin CASCADE');
+          await client.query('DROP TABLE IF EXISTS wellness CASCADE');
+          await client.query('DELETE FROM schema_version');
+        }
+
+        const actuelle = ancienSchema ? 0 : (rows[0]?.v ?? 0);
 
         for (const migration of MIGRATIONS) {
           if (migration.version <= actuelle) continue;
@@ -255,54 +191,15 @@ export async function migrer(db: BaseCarter): Promise<void> {
   }
 }
 
-/**
- * Prend un instantane avant une operation risquee (synchro, import coach,
- * restauration) et retourne son identifiant.
- *
- * Contrairement a la copie de fichier SQLite qu'elle remplace, cette
- * sauvegarde ne couvre que le plan et son historique. C'est volontaire : le
- * plan est la seule donnee non reconstructible. Les activites et le wellness
- * se reimportent depuis Intervals.icu, et les dupliquer a chaque synchro
- * ferait gonfler la base sans rien apporter.
- */
-export async function sauvegarder(
-  db: BaseCarter,
-  motif: string,
-): Promise<string | null> {
-  const cree = new Date().toISOString();
-
-  const plans = await db.query('SELECT * FROM plan');
-  if (plans.rows.length === 0) return null; // rien a sauvegarder
-
-  const versions = await db.query(
-    'SELECT * FROM plan_version ORDER BY plan_id, version',
+async function tableExiste(client: pg.PoolClient, nom: string): Promise<boolean> {
+  const { rows } = await client.query<{ existe: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM information_schema.tables
+       WHERE table_schema = 'public' AND table_name = $1
+     ) AS existe`,
+    [nom],
   );
-  const correspondances = await db.query('SELECT * FROM correspondance');
-
-  const contenu = JSON.stringify({
-    cree_le: cree,
-    motif,
-    plan: plans.rows,
-    plan_version: versions.rows,
-    correspondance: correspondances.rows,
-  });
-
-  const { rows } = await db.query<{ id: string }>(
-    'INSERT INTO sauvegarde (motif, cree_le, contenu) VALUES ($1, $2, $3) RETURNING id',
-    [motif, cree, contenu],
-  );
-
-  await purgerSauvegardes(db, 30);
-  return rows[0]?.id ?? null;
-}
-
-/** Conserve les N sauvegardes les plus recentes. */
-async function purgerSauvegardes(db: BaseCarter, garder: number): Promise<void> {
-  await db.query(
-    `DELETE FROM sauvegarde
-     WHERE id NOT IN (SELECT id FROM sauvegarde ORDER BY id DESC LIMIT $1)`,
-    [garder],
-  );
+  return rows[0]?.existe === true;
 }
 
 /** Ferme le pool. Utile en test et a l'arret d'un serveur long-vivant. */

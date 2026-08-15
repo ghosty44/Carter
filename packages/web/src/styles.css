@@ -1,7 +1,6 @@
 /*
- * Mobile d'abord : la saisie du RPE et des douleurs se fait au retour de
- * sortie, telephone en main, parfois avec les doigts mouilles. Les cibles
- * tactiles ne descendent jamais sous 44 px.
+ * Mobile d'abord : l'app se consulte au retour de sortie, telephone en main.
+ * Les cibles tactiles ne descendent jamais sous 44 px.
  */
 
 :root {
@@ -12,23 +11,23 @@
   --texte: #e8edf2;
   --texte-doux: #97a3ad;
   --accent: #4ea3f5;
-  --charge: #4ea3f5;
-  --allegee: #4ec9a0;
-  --affutage: #c99b4e;
-  --course: #f56f6f;
-  --recuperation: #8b8bd8;
   --danger: #f56f6f;
-  --attention: #e0a640;
   --ok: #4ec9a0;
-  --rayon: 10px;
+  --rayon: 12px;
+
+  --sport-course: #4ea3f5;
+  --sport-trail: #4ec9a0;
+  --sport-velo: #e0a640;
+  --sport-renfo: #b48be0;
+  --sport-autre: #8b98a5;
 }
 
 @media (prefers-color-scheme: light) {
   :root {
-    --fond: #f6f8fa;
+    --fond: #f5f7f9;
     --surface: #ffffff;
     --surface-haute: #eef2f6;
-    --bordure: #d8dfe6;
+    --bordure: #dde4ea;
     --texte: #161c22;
     --texte-doux: #5c6873;
   }
@@ -47,28 +46,26 @@ body {
 }
 
 #racine {
-  max-width: 900px;
+  max-width: 780px;
   margin: 0 auto;
-  padding: 0 12px 96px;
+  padding: 0 12px 92px;
 }
 
 h1 {
-  font-size: 1.25rem;
-  margin: 16px 0 4px;
+  font-size: 1.4rem;
+  margin: 20px 0 4px;
 }
 
 h2 {
-  font-size: 1.05rem;
-  margin: 20px 0 8px;
+  font-size: 1.02rem;
+  margin: 22px 0 8px;
 }
 
-h3 {
-  font-size: 0.95rem;
-  margin: 14px 0 6px;
-}
-
-a {
-  color: var(--accent);
+code {
+  background: var(--surface-haute);
+  padding: 1px 5px;
+  border-radius: 5px;
+  font-size: 0.86em;
 }
 
 .doux {
@@ -80,14 +77,19 @@ a {
   background: var(--surface);
   border: 1px solid var(--bordure);
   border-radius: var(--rayon);
-  padding: 12px;
+  padding: 14px;
   margin-bottom: 10px;
+}
+
+details.carte > summary {
+  cursor: pointer;
+  font-weight: 600;
 }
 
 button {
   font: inherit;
   min-height: 44px;
-  padding: 10px 14px;
+  padding: 10px 16px;
   border-radius: var(--rayon);
   border: 1px solid var(--bordure);
   background: var(--surface-haute);
@@ -109,6 +111,7 @@ button.principal {
   border-color: var(--accent);
   color: #07121c;
   font-weight: 600;
+  width: 100%;
 }
 
 button.danger {
@@ -116,43 +119,37 @@ button.danger {
   color: var(--danger);
 }
 
-button.compact {
-  min-height: 36px;
-  padding: 6px 10px;
-  font-size: 0.86rem;
-}
-
-input,
-select,
-textarea {
+input {
   font: inherit;
   width: 100%;
   min-height: 44px;
-  padding: 9px 10px;
+  padding: 10px 12px;
   border-radius: var(--rayon);
   border: 1px solid var(--bordure);
   background: var(--fond);
   color: var(--texte);
 }
 
-textarea {
-  min-height: 80px;
-  resize: vertical;
-}
-
 label {
   display: block;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
 label > span {
   display: block;
-  margin-bottom: 4px;
+  margin-bottom: 5px;
   color: var(--texte-doux);
   font-size: 0.85rem;
 }
 
-/* --- Navigation par onglets, collee en bas sur telephone --- */
+.rangee {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* --- Navigation --- */
 nav.onglets {
   position: fixed;
   bottom: 0;
@@ -170,8 +167,7 @@ nav.onglets button {
   border: none;
   border-radius: 0;
   background: none;
-  font-size: 0.76rem;
-  padding: 8px 2px;
+  font-size: 0.82rem;
   min-height: 56px;
   color: var(--texte-doux);
 }
@@ -179,218 +175,176 @@ nav.onglets button {
 nav.onglets button[aria-current='page'] {
   color: var(--accent);
   box-shadow: inset 0 2px 0 var(--accent);
+  font-weight: 600;
 }
 
-/* --- Semaines et seances --- */
-.semaine {
-  border-left: 4px solid var(--bordure);
-  padding-left: 10px;
-  margin-bottom: 14px;
+/* --- Seances --- */
+.seance {
+  border-left: 3px solid var(--sport-autre);
 }
 
-.semaine.CHARGE {
-  border-left-color: var(--charge);
+.seance.sport-COURSE,
+.seance.sport-COURSE_INTERIEUR {
+  border-left-color: var(--sport-course);
 }
-.semaine.ALLEGEE {
-  border-left-color: var(--allegee);
+.seance.sport-TRAIL {
+  border-left-color: var(--sport-trail);
 }
-.semaine.AFFUTAGE {
-  border-left-color: var(--affutage);
+.seance.sport-VELO,
+.seance.sport-VELO_INTERIEUR {
+  border-left-color: var(--sport-velo);
 }
-.semaine.COURSE {
-  border-left-color: var(--course);
-}
-.semaine.RECUPERATION {
-  border-left-color: var(--recuperation);
+.seance.sport-RENFORCEMENT {
+  border-left-color: var(--sport-renfo);
 }
 
-.entete-semaine {
+.entete {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 10px;
   cursor: pointer;
 }
 
-.seance {
-  display: flex;
-  gap: 10px;
-  align-items: baseline;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--bordure);
-}
-
-.seance:last-child {
-  border-bottom: none;
-}
-
-.seance .jour {
-  width: 68px;
-  flex-shrink: 0;
-  color: var(--texte-doux);
-  font-size: 0.82rem;
-}
-
-.seance .duree {
-  margin-left: auto;
-  font-variant-numeric: tabular-nums;
-  color: var(--texte-doux);
-}
-
 .etiquette {
-  display: inline-block;
   font-size: 0.72rem;
-  padding: 2px 7px;
+  padding: 3px 9px;
   border-radius: 20px;
   border: 1px solid var(--bordure);
   color: var(--texte-doux);
   white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.mesures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.mesures.grandes {
+  gap: 20px 24px;
+}
+
+.mesure .valeur {
+  font-size: 1.05rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.mesures.grandes .mesure .valeur {
+  font-size: 1.3rem;
+}
+
+.mesure .legende {
+  font-size: 0.74rem;
+  color: var(--texte-doux);
+}
+
+.detail {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--bordure);
+}
+
+.ligne {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--bordure);
+  font-size: 0.9rem;
+}
+
+.ligne:last-child {
+  border-bottom: none;
 }
 
 /* --- Graphe de volume --- */
 .graphe {
   display: flex;
   align-items: flex-end;
-  gap: 3px;
-  height: 130px;
-  padding-top: 8px;
-  overflow-x: auto;
+  gap: 4px;
+  height: 140px;
+  margin: 12px 0 6px;
+}
+
+.graphe .colonne {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
 }
 
 .graphe .barre {
-  flex: 1;
-  min-width: 16px;
-  border-radius: 3px 3px 0 0;
-  background: var(--charge);
+  width: 100%;
+  min-height: 2px;
+  background: var(--sport-autre);
+  border-radius: 4px 4px 0 0;
   position: relative;
+  overflow: hidden;
 }
 
-.graphe .barre.ALLEGEE {
-  background: var(--allegee);
-}
-.graphe .barre.AFFUTAGE {
-  background: var(--affutage);
-}
-.graphe .barre.COURSE {
-  background: var(--course);
-}
-.graphe .barre.RECUPERATION {
-  background: var(--recuperation);
-}
-
-.graphe .barre .realise {
+.graphe .part-course {
   position: absolute;
   inset: auto 0 0 0;
-  background: rgba(255, 255, 255, 0.4);
-  border-radius: 0 0 3px 3px;
+  background: var(--sport-course);
 }
 
-/* --- Alertes --- */
-.alerte {
-  border-left: 4px solid var(--attention);
-  background: var(--surface);
-  border-radius: 0 var(--rayon) var(--rayon) 0;
-  padding: 10px 12px;
-  margin-bottom: 8px;
-  font-size: 0.9rem;
+/* --- Repartition --- */
+.repartition {
+  margin-bottom: 12px;
 }
 
-.alerte.CRITIQUE {
-  border-left-color: var(--danger);
-}
-.alerte.INFO {
-  border-left-color: var(--accent);
-}
-
-/* --- Apercu de synchro --- */
-.op {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  padding: 7px 0;
-  border-bottom: 1px solid var(--bordure);
-  font-size: 0.9rem;
-}
-
-.op .date {
-  font-variant-numeric: tabular-nums;
-  color: var(--texte-doux);
-  width: 88px;
-  flex-shrink: 0;
-}
-
-.op .motif {
-  display: block;
-  color: var(--texte-doux);
-  font-size: 0.8rem;
-}
-
-.pastille {
-  width: 8px;
+.jauge {
   height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  display: inline-block;
+  background: var(--surface-haute);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 5px;
 }
 
-.pastille.CREER {
-  background: var(--ok);
-}
-.pastille.METTRE_A_JOUR {
-  background: var(--attention);
-}
-.pastille.SUPPRIMER {
-  background: var(--danger);
+.jauge .remplissage {
+  height: 100%;
+  background: var(--sport-autre);
 }
 
-.rangee {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  align-items: center;
+.remplissage.sport-COURSE,
+.remplissage.sport-COURSE_INTERIEUR {
+  background: var(--sport-course);
+}
+.remplissage.sport-TRAIL {
+  background: var(--sport-trail);
+}
+.remplissage.sport-VELO,
+.remplissage.sport-VELO_INTERIEUR {
+  background: var(--sport-velo);
+}
+.remplissage.sport-RENFORCEMENT {
+  background: var(--sport-renfo);
 }
 
-.choix {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.choix button {
-  min-width: 44px;
-  padding: 8px;
-}
-
-.choix button[aria-pressed='true'] {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #07121c;
-  font-weight: 600;
-}
-
-pre.bloc {
-  background: var(--fond);
-  border: 1px solid var(--bordure);
-  border-radius: var(--rayon);
-  padding: 10px;
+/* --- Tableaux --- */
+.defilant {
   overflow-x: auto;
-  font-size: 0.8rem;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 380px;
+  margin-top: 14px;
 }
 
 table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.86rem;
+  font-size: 0.85rem;
+  white-space: nowrap;
 }
 
 th,
 td {
   text-align: left;
-  padding: 7px 6px;
+  padding: 7px 10px 7px 0;
   border-bottom: 1px solid var(--bordure);
+  font-variant-numeric: tabular-nums;
 }
 
 th {
@@ -398,14 +352,11 @@ th {
   font-weight: 500;
 }
 
-.defilant {
-  overflow-x: auto;
-}
-
+/* --- Messages --- */
 .message {
-  padding: 10px 12px;
+  padding: 12px 14px;
   border-radius: var(--rayon);
-  margin-bottom: 10px;
+  margin-bottom: 12px;
   font-size: 0.9rem;
 }
 

@@ -1,87 +1,43 @@
 import { z } from 'zod';
 
-/** Type de semaine dans la periodisation. */
-export const TypeSemaine = z.enum([
-  'CHARGE',
-  'ALLEGEE',
-  'AFFUTAGE',
-  'COURSE',
-  'RECUPERATION',
-]);
-export type TypeSemaine = z.infer<typeof TypeSemaine>;
-
-/** Nature d'une seance. REPOS existe pour rendre une journee vide explicite. */
-export const TypeSeance = z.enum([
-  'FOOTING',
-  'SORTIE_LONGUE',
-  'COTES',
-  'SEUIL',
-  'RENFO',
-  'VELO',
-  'REPOS',
-]);
-export type TypeSeance = z.infer<typeof TypeSeance>;
-
-/** Types qui comptent dans le volume de course a pied. */
-export const TYPES_COURSE: readonly TypeSeance[] = [
-  'FOOTING',
-  'SORTIE_LONGUE',
-  'COTES',
-  'SEUIL',
-];
-
-/** Intensite cible. EF = endurance fondamentale. */
-export const Intensite = z.enum(['EF', 'Z2', 'SEUIL', 'VMA']);
-export type Intensite = z.infer<typeof Intensite>;
-
-/** Etat de synchronisation d'une seance vis-a-vis du provider. */
-export const SyncState = z.enum([
-  'A_CREER',
-  'SYNCHRONISEE',
-  'A_METTRE_A_JOUR',
-  'A_SUPPRIMER',
-  'ERREUR',
-]);
-export type SyncState = z.infer<typeof SyncState>;
-
 /**
- * Providers connus. Le moteur de synchro ne connait que cette liste.
+ * Sports, ramenes a un vocabulaire stable.
  *
- * GARMIN        : API Training officielle, sous reserve d'acces partenaire.
- * GARMIN_DIRECT : connexion au compte Garmin Connect de l'athlete, par le
- *                 meme mecanisme que l'application mobile. Non officiel.
+ * Garmin expose des dizaines de `typeKey` (`running`, `treadmill_running`,
+ * `track_running`...). Les regrouper ici evite que chaque ecran refasse le
+ * meme tri, et que l'ajout d'un sport casse les statistiques.
  */
-export const NomProvider = z.enum(['INTERVALS', 'GARMIN', 'GARMIN_DIRECT', 'LOCAL']);
-export type NomProvider = z.infer<typeof NomProvider>;
-
-/** Role d'une etape dans une seance structuree. */
-export const RoleEtape = z.enum([
-  'ECHAUFFEMENT',
-  'EFFORT',
-  'RECUPERATION',
-  'REPETITION',
-  'RETOUR_AU_CALME',
+export const Sport = z.enum([
+  'COURSE',
+  'TRAIL',
+  'COURSE_INTERIEUR',
+  'VELO',
+  'VELO_INTERIEUR',
+  'RENFORCEMENT',
+  'MARCHE',
+  'RANDONNEE',
+  'NATATION',
+  'AUTRE',
 ]);
-export type RoleEtape = z.infer<typeof RoleEtape>;
+export type Sport = z.infer<typeof Sport>;
 
-/** Nature de la cible d'une etape structuree. */
-export const TypeCible = z.enum(['ALLURE', 'FC', 'PUISSANCE', 'AUCUNE']);
-export type TypeCible = z.infer<typeof TypeCible>;
+/** Sports comptes comme de la course a pied dans les totaux. */
+export const SPORTS_COURSE: readonly Sport[] = ['COURSE', 'TRAIL', 'COURSE_INTERIEUR'];
 
-/** Priorite d'une course dans la saison. */
-export const PrioriteCourse = z.enum(['A', 'B', 'C']);
-export type PrioriteCourse = z.infer<typeof PrioriteCourse>;
+/** Libelles affiches. */
+export const LIBELLE_SPORT: Record<Sport, string> = {
+  COURSE: 'Course',
+  TRAIL: 'Trail',
+  COURSE_INTERIEUR: 'Tapis',
+  VELO: 'Vélo',
+  VELO_INTERIEUR: 'Home-trainer',
+  RENFORCEMENT: 'Renforcement',
+  MARCHE: 'Marche',
+  RANDONNEE: 'Randonnée',
+  NATATION: 'Natation',
+  AUTRE: 'Autre',
+};
 
-/** Origine d'une seance realisee. */
-export const SourceRealisee = z.enum([
-  'INTERVALS',
-  'GARMIN_DIRECT',
-  'STRAVA',
-  'FIT_IMPORT',
-  'MANUEL',
-]);
-export type SourceRealisee = z.infer<typeof SourceRealisee>;
-
-/** Action possible lors d'une synchronisation. */
-export const ActionSync = z.enum(['CREER', 'METTRE_A_JOUR', 'SUPPRIMER']);
-export type ActionSync = z.infer<typeof ActionSync>;
+export function estCourse(sport: Sport): boolean {
+  return SPORTS_COURSE.includes(sport);
+}

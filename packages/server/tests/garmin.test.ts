@@ -6,13 +6,14 @@ import {
   encoder,
   enteteOAuth1,
   parserFormulaire,
-} from '../src/providers/garmin-direct-oauth.js';
+} from '../src/garmin/oauth.js';
 import {
   assemblerWellness,
+  heureDe,
   poidsParDate,
-  typeSport,
-  versSeanceRealisee,
-} from '../src/providers/garmin-direct-contrat.js';
+  versActivite,
+  versSport,
+} from '../src/garmin/contrat.js';
 import { chiffrer, dechiffrer } from '../src/chiffrement.js';
 
 const DOSSIER = join(import.meta.dirname, 'fixtures', 'garmin');
@@ -24,12 +25,9 @@ function fixture<T = unknown>(nom: string): T {
 describe('signature OAuth 1.0a', () => {
   /**
    * Le flux Garmin n'etant pas joignable depuis l'environnement de
-   * developpement, on verifie ce qui est verifiable hors ligne : les regles
-   * d'encodage et de construction de la chaine de signature, qui sont
-   * normalisees et ou se logent la quasi-totalite des bugs OAuth 1.
-   *
-   * L'encodage percent (RFC 5849 section 3.6) est la regle la plus souvent
-   * mal appliquee, parce que `encodeURIComponent` ne suffit pas.
+   * developpement, on verifie ce qui l'est hors ligne : les regles d'encodage
+   * et la construction de la chaine de signature. C'est la que se logent la
+   * quasi-totalite des bugs OAuth 1.
    */
   it('encode selon la RFC 5849 et non selon encodeURIComponent', () => {
     // Ces cinq caracteres doivent etre encodes, contrairement au defaut JS.
@@ -53,11 +51,31 @@ describe('signature OAuth 1.0a', () => {
     expect(chaine).toBe('POST&https%3A%2F%2Fexample.com%2Frequest&a%3D1%26b%3D2');
   });
 
+  it('inclut les parametres de la query string dans la signature', () => {
+    const consommateur = { consumer_key: 'k', consumer_secret: 's' };
+    const options = { nonce: 'n', timestamp: '1000' };
+
+    const avec = enteteOAuth1('GET', 'https://x.test/c?ticket=ST-1', consommateur, undefined, options);
+    const sans = enteteOAuth1('GET', 'https://x.test/c', consommateur, undefined, options);
+
+    expect(avec).not.toBe(sans);
+  });
+
+  it('fait entrer le secret du jeton dans la clef de signature', () => {
+    const consommateur = { consumer_key: 'k', consumer_secret: 's' };
+    const options = { nonce: 'n', timestamp: '1000' };
+
+    const a = enteteOAuth1('GET', 'https://x.test/y', consommateur, { oauth_token: 't', oauth_token_secret: 'a' }, options);
+    const b = enteteOAuth1('GET', 'https://x.test/y', consommateur, { oauth_token: 't', oauth_token_secret: 'b' }, options);
+
+    expect(a).not.toBe(b);
+    expect(a).toContain('oauth_token="t"');
+  });
+
   /**
-   * Valeur de reference calculee localement en reappliquant l'algorithme a la
-   * main (voir l'historique de developpement), pas un vecteur publie. Elle
-   * sert de garde-fou contre une regression, pas de preuve de conformite —
-   * la conformite est couverte par les deux tests ci-dessus.
+   * Valeur calculee localement en reappliquant l'algorithme a la main, pas un
+   * vecteur publie : garde-fou contre une regression, pas preuve de
+   * conformite — celle-ci est couverte par les tests ci-dessus.
    */
   it('reste stable a parametres fixes', () => {
     const entete = enteteOAuth1(
@@ -74,49 +92,7 @@ describe('signature OAuth 1.0a', () => {
     );
 
     expect(entete).toContain('oauth_signature="mIPx9sQqO97OuihOwUEyB7c4%2FGI%3D"');
-    expect(entete).toContain('oauth_nonce="wIjqoS"');
     expect(entete).not.toContain('oauth_version');
-  });
-
-  it('inclut les parametres de la query string dans la signature', () => {
-    const commun = {
-      consommateur: { consumer_key: 'k', consumer_secret: 's' },
-      options: { nonce: 'n', timestamp: '1000' },
-    };
-
-    const avec = enteteOAuth1(
-      'GET',
-      'https://exemple.test/chemin?ticket=ST-1',
-      commun.consommateur,
-      undefined,
-      commun.options,
-    );
-    const sans = enteteOAuth1(
-      'GET',
-      'https://exemple.test/chemin',
-      commun.consommateur,
-      undefined,
-      commun.options,
-    );
-
-    expect(avec).not.toBe(sans);
-  });
-
-  it('fait entrer le secret du jeton dans la clef de signature', () => {
-    const options = { nonce: 'n', timestamp: '1000' };
-    const consommateur = { consumer_key: 'k', consumer_secret: 's' };
-
-    const a = enteteOAuth1('GET', 'https://exemple.test/x', consommateur, {
-      oauth_token: 't',
-      oauth_token_secret: 'secret-a',
-    }, options);
-    const b = enteteOAuth1('GET', 'https://exemple.test/x', consommateur, {
-      oauth_token: 't',
-      oauth_token_secret: 'secret-b',
-    }, options);
-
-    expect(a).not.toBe(b);
-    expect(a).toContain('oauth_token="t"');
   });
 
   it('parse une reponse form-urlencoded', () => {
@@ -126,72 +102,100 @@ describe('signature OAuth 1.0a', () => {
   });
 });
 
-describe('conversion des activites Garmin', () => {
+describe('conversion des activites', () => {
   const activites = fixture<unknown[]>('activites');
 
-  it('convertit une course en seance realisee', () => {
-    const s = versSeanceRealisee(activites[0])!;
+  it('convertit une course', () => {
+    const a = versActivite(activites[0])!;
 
-    expect(s.id).toBe('garmin-18734001');
-    expect(s.external_id).toBe('18734001');
-    expect(s.source).toBe('GARMIN_DIRECT');
-    expect(s.date).toBe('2026-03-03');
-    expect(s.type_sport).toBe('Run');
-    expect(s.fc_moy).toBe(142);
-    expect(s.distance_m).toBeCloseTo(5210.4);
-    expect(s.allure_moy_s_km).toBeCloseTo(355.87, 1);
+    expect(a.id).toBe('18734001');
+    expect(a.date).toBe('2026-03-03');
+    expect(a.heure).toBe('18:12');
+    expect(a.sport).toBe('COURSE');
+    expect(a.fc_moy).toBe(142);
+    expect(a.distance_m).toBeCloseTo(5210.4);
+    expect(a.allure_s_km).toBeCloseTo(355.87, 1);
   });
 
-  it('retient la duree en mouvement, pas la duree totale', () => {
-    // 1854 s en mouvement contre 1902 s ecoulees : c'est le temps d'effort
-    // qui doit etre compare au volume prevu.
-    expect(versSeanceRealisee(activites[0])!.duree_s).toBe(1854);
+  it('retient le temps en mouvement, pas le temps ecoule', () => {
+    // 1854 s en mouvement contre 1902 s ecoulees.
+    const a = versActivite(activites[0])!;
+    expect(a.duree_s).toBe(1854);
+    expect(a.duree_totale_s).toBe(1902);
   });
 
   it('accepte un identifiant numerique comme une chaine', () => {
-    expect(versSeanceRealisee(activites[1])!.external_id).toBe('18734002');
+    expect(versActivite(activites[1])!.id).toBe('18734002');
   });
 
   it('tolere un champ inconnu ajoute par Garmin', () => {
-    expect(versSeanceRealisee(activites[1])!.type_sport).toBe('TrailRun');
+    expect(versActivite(activites[1])!.sport).toBe('TRAIL');
   });
 
-  it('ne calcule pas d allure pour le renforcement', () => {
-    const s = versSeanceRealisee(activites[2])!;
-    expect(s.type_sport).toBe('WeightTraining');
-    expect(s.allure_moy_s_km).toBeNull();
+  it('donne une vitesse au velo et une allure a la course, jamais les deux', () => {
+    const course = versActivite(activites[0])!;
+    expect(course.allure_s_km).not.toBeNull();
+    expect(course.vitesse_kmh).toBeNull();
+
+    const velo = versActivite({
+      activityId: 1,
+      startTimeLocal: '2026-03-04 10:00:00',
+      activityType: { typeKey: 'cycling' },
+      movingDuration: 3600,
+      distance: 30000,
+      averageSpeed: 8.33,
+    })!;
+    expect(velo.allure_s_km).toBeNull();
+    expect(velo.vitesse_kmh).toBeCloseTo(30, 0);
+  });
+
+  it('ne calcule ni allure ni vitesse pour le renforcement', () => {
+    const a = versActivite(activites[2])!;
+    expect(a.sport).toBe('RENFORCEMENT');
+    expect(a.allure_s_km).toBeNull();
+    expect(a.vitesse_kmh).toBeNull();
   });
 
   it('degrade proprement une activite sans donnees', () => {
-    const s = versSeanceRealisee(activites[3])!;
-    expect(s.duree_s).toBe(0);
-    expect(s.fc_moy).toBeNull();
-    expect(s.allure_moy_s_km).toBeNull();
+    const a = versActivite(activites[3])!;
+    expect(a.duree_s).toBe(0);
+    expect(a.fc_moy).toBeNull();
+    expect(a.allure_s_km).toBeNull();
   });
 
   it('ignore une activite sans date exploitable', () => {
-    expect(versSeanceRealisee(activites[4])).toBeNull();
+    expect(versActivite(activites[4])).toBeNull();
   });
 
-  it('range un sport inconnu dans Other plutot que de le rejeter', () => {
-    const s = versSeanceRealisee(activites[5])!;
-    expect(s.type_sport).toBe('Other');
-    expect(s.duree_s).toBe(600);
+  it('range un sport inconnu dans AUTRE plutot que de le rejeter', () => {
+    const a = versActivite(activites[5])!;
+    expect(a.sport).toBe('AUTRE');
+    expect(a.duree_s).toBe(600);
+    // Le type brut est conserve, pour comprendre ce que Garmin a envoye.
+    expect(a.sport_garmin).toBe('underwater_basket_weaving');
   });
 
-  it('mappe les types de sport vers le vocabulaire deja utilise dans l app', () => {
-    expect(typeSport('running')).toBe('Run');
-    expect(typeSport('trail_running')).toBe('TrailRun');
-    expect(typeSport('strength_training')).toBe('WeightTraining');
-    expect(typeSport('gravel_cycling')).toBe('Ride');
-    expect(typeSport(null)).toBe('Other');
+  it('regroupe les variantes de course sous les memes sports', () => {
+    expect(versSport('running')).toBe('COURSE');
+    expect(versSport('track_running')).toBe('COURSE');
+    expect(versSport('trail_running')).toBe('TRAIL');
+    expect(versSport('treadmill_running')).toBe('COURSE_INTERIEUR');
+    expect(versSport('gravel_cycling')).toBe('VELO');
+    expect(versSport('strength_training')).toBe('RENFORCEMENT');
+    expect(versSport(null)).toBe('AUTRE');
+  });
+
+  it('extrait l heure locale, ou null si le format surprend', () => {
+    expect(heureDe('2026-03-03 18:12:04')).toBe('18:12');
+    expect(heureDe('2026-03-03')).toBeNull();
+    expect(heureDe(null)).toBeNull();
   });
 });
 
-describe('assemblage du wellness Garmin', () => {
+describe('assemblage de la forme', () => {
   const w = fixture<Record<string, unknown>>('wellness');
 
-  it('reunit resume, sommeil, HRV et poids en une journee', () => {
+  it('reunit resume, sommeil, HRV et poids', () => {
     const jour = assemblerWellness({
       date: '2026-03-03',
       resume: w.resume,
@@ -204,22 +208,17 @@ describe('assemblage du wellness Garmin', () => {
     expect(jour.sommeil_h).toBe(7.5);
     expect(jour.hrv).toBe(68);
     expect(jour.poids_kg).toBe(72.4);
+    expect(jour.pas).toBe(9412);
   });
 
-  it('met Body Battery et stress en note, sans creer de colonnes inutiles', () => {
+  it('prend la valeur haute de Body Battery, plus parlante que la derniere', () => {
     const jour = assemblerWellness({ date: '2026-03-03', resume: w.resume });
-    expect(jour.note).toBe('Body Battery 72, stress moyen 28');
-  });
-
-  it('laisse fatigue et humeur a la saisie manuelle', () => {
-    const jour = assemblerWellness({ date: '2026-03-03', resume: w.resume });
-    expect(jour.fatigue_1_5).toBeNull();
-    expect(jour.humeur_1_5).toBeNull();
+    expect(jour.body_battery).toBe(88);
   });
 
   it('ignore un stress negatif, qui signale une mesure absente', () => {
     const jour = assemblerWellness({ date: '2026-03-04', resume: w.resumeVide });
-    expect(jour.note).toBe('');
+    expect(jour.stress_moy).toBeNull();
     expect(jour.fc_repos).toBeNull();
   });
 
@@ -248,8 +247,7 @@ describe('chiffrement des jetons', () => {
   });
 
   it('produit un chiffre different a chaque appel', () => {
-    // IV aleatoire : deux chiffrements du meme texte ne doivent pas coincider,
-    // sinon on revele que la valeur n'a pas change.
+    // IV aleatoire : deux chiffrements du meme texte ne doivent pas coincider.
     expect(chiffrer('meme-valeur', secret)).not.toBe(chiffrer('meme-valeur', secret));
   });
 

@@ -1,24 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { SeanceRealisee } from '@carter/shared';
-import { fermerBase, migrer, ouvrirBase, sauvegarder, type BaseCarter } from '../src/db/index.js';
-import {
-  DepotPlan,
-  DepotQuestions,
-  DepotRealise,
-  DepotSyncPg,
-  DepotWellness,
-} from '../src/db/depots.js';
-import { calculerDiff } from '../src/sync/diff.js';
-import { appliquerSync } from '../src/sync/moteur.js';
-import { ProviderMemoire } from '../src/providers/memoire.js';
-import { LUNDI, TYPES_SYNC, hashDe, planTest } from './aide.js';
+import { fermerBase, migrer, ouvrirBase, type BaseCarter } from '../src/db/index.js';
+import { DepotActivites, DepotSessionGarminPg, DepotWellness } from '../src/db/depots.js';
+import { activite } from './aide.js';
 
 /**
  * Tests d'integration contre un vrai Postgres.
  *
- * Ignores automatiquement quand `TEST_DATABASE_URL` est absente, pour que
- * `npm test` reste executable sans base. C'est le seul endroit du projet qui
- * touche une base reelle : le reste des tests est isole par construction.
+ * Ignores quand `TEST_DATABASE_URL` est absente, pour que `npm test` reste
+ * executable sans base. Seul endroit du projet qui touche une base reelle.
  *
  *   TEST_DATABASE_URL=postgres://carter@127.0.0.1:5433/carter npm test
  */
@@ -30,7 +19,7 @@ let db: BaseCarter;
 suite('couche Postgres', () => {
   beforeAll(async () => {
     db = ouvrirBase(URL_TEST!);
-    // Table rase : ces tests doivent partir d'un schema vierge.
+    // Table rase : ces tests partent d'un schema vierge.
     await db.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
     await migrer(db);
   });
@@ -39,8 +28,8 @@ suite('couche Postgres', () => {
     await fermerBase();
   });
 
-  it('applique les migrations et est rejouable sans effet', async () => {
-    await migrer(db); // second passage : ne doit rien casser
+  it('cree le schema et se rejoue sans effet', async () => {
+    await migrer(db);
 
     const { rows } = await db.query<{ table_name: string }>(
       `SELECT table_name FROM information_schema.tables
@@ -48,269 +37,148 @@ suite('couche Postgres', () => {
     );
     const tables = rows.map((r) => r.table_name);
 
-    expect(tables).toContain('plan');
-    expect(tables).toContain('plan_version');
-    expect(tables).toContain('correspondance');
-    expect(tables).toContain('journal_sync');
-    expect(tables).toContain('seance_realisee');
+    expect(tables).toContain('activite');
     expect(tables).toContain('wellness');
-    expect(tables).toContain('sauvegarde');
+    expect(tables).toContain('session_garmin');
   });
 
-  it('enregistre un plan et incremente la version a chaque revision', async () => {
-    const depot = new DepotPlan(db);
-    const plan = planTest([[{ id: 'a', jour: 1, duree: 30 }]]);
+  it('nettoie les tables de l ancienne version de l app', async () => {
+    // Simule un deploiement par-dessus l'ancien schema.
+    await db.query('CREATE TABLE IF NOT EXISTS plan (id TEXT PRIMARY KEY)');
+    await db.query('CREATE TABLE IF NOT EXISTS journal_sync (id BIGSERIAL PRIMARY KEY)');
 
-    const v1 = await depot.enregistrer(plan, 'INITIAL');
-    expect(v1.version).toBe(1);
+    await migrer(db);
 
-    const v2 = await depot.enregistrer(plan, 'EDITION');
-    expect(v2.version).toBe(2);
-
-    const courant = await depot.courant();
-    expect(courant?.version).toBe(2);
-
-    const versions = await depot.versions(plan.id);
-    expect(versions.map((v) => v.version)).toEqual([2, 1]);
-
-    const ancienne = await depot.versionPrecise(plan.id, 1);
-    expect(ancienne?.version).toBe(1);
+    const { rows } = await db.query<{ n: string }>(
+      `SELECT COUNT(*) AS n FROM information_schema.tables
+       WHERE table_schema = 'public' AND table_name IN ('plan', 'journal_sync')`,
+    );
+    expect(Number(rows[0]!.n)).toBe(0);
   });
 
-  it('serialise deux revisions concurrentes sans collision de version', async () => {
-    const depot = new DepotPlan(db);
-    const plan = planTest([[{ id: 'a', jour: 1 }]], '2026-03-09');
-    plan.id = 'plan-concurrent';
+  it('enregistre un lot d activites en une requete', async () => {
+    const depot = new DepotActivites(db);
 
-    // Le cas serverless typique : deux invocations en parallele.
-    const resultats = await Promise.all([
-      depot.enregistrer(plan, 'IMPORT'),
-      depot.enregistrer(plan, 'IMPORT'),
-      depot.enregistrer(plan, 'IMPORT'),
+    const ecrites = await depot.enregistrerLot([
+      activite('a1', '2026-03-03'),
+      activite('a2', '2026-03-05', { sport: 'TRAIL', duree_s: 5400 }),
+      activite('a3', '2026-03-07', { sport: 'VELO', vitesse_kmh: 28.4 }),
     ]);
 
-    const versions = resultats.map((r) => r.version).sort((a, b) => a - b);
-    expect(versions).toEqual([1, 2, 3]);
+    expect(ecrites).toBe(3);
+    expect(await depot.compter()).toBe(3);
+
+    const recentes = await depot.recentes(10);
+    // La plus recente en premier.
+    expect(recentes[0]!.id).toBe('a3');
+    expect(recentes[0]!.vitesse_kmh).toBeCloseTo(28.4);
   });
 
-  it('conserve les correspondances et le journal de synchro', async () => {
-    const depot = new DepotSyncPg(db);
+  it('met a jour une activite deja connue au lieu de la dupliquer', async () => {
+    const depot = new DepotActivites(db);
 
-    await depot.enregistrerCorrespondance({
-      seanceId: 's1',
-      externalId: 'ext-1',
-      provider: 'INTERVALS',
-      hash: 'h1',
-    });
-    // Reecriture : doit mettre a jour, pas dupliquer.
-    await depot.enregistrerCorrespondance({
-      seanceId: 's1',
-      externalId: 'ext-1',
-      provider: 'INTERVALS',
-      hash: 'h2',
-    });
+    // Garmin renvoie parfois une activite renommee apres coup.
+    await depot.enregistrerLot([activite('a1', '2026-03-03', { nom: 'Footing renomme' })]);
 
-    let liste = await depot.correspondances('INTERVALS');
-    expect(liste).toHaveLength(1);
-    expect(liste[0]!.hashSynchronise).toBe('h2');
-
-    // Isolement par provider.
-    expect(await depot.correspondances('LOCAL')).toHaveLength(0);
-
-    await depot.journaliser({
-      provider: 'INTERVALS',
-      action: 'CREER',
-      seanceId: 's1',
-      externalId: 'ext-1',
-      dateSeance: '2026-03-03',
-      titre: 'Footing',
-      ok: true,
-      erreur: null,
-      reponse: null,
-    });
-
-    const journal = await depot.journal(10);
-    expect(journal[0]).toMatchObject({ action: 'CREER', ok: true, titre: 'Footing' });
-    expect(typeof journal[0]!.id).toBe('number');
-
-    await depot.oublierCorrespondance('ext-1');
-    liste = await depot.correspondances('INTERVALS');
-    expect(liste).toHaveLength(0);
+    expect(await depot.compter()).toBe(3);
+    expect((await depot.parId('a1'))!.nom).toBe('Footing renomme');
   });
 
-  it('ne laisse pas un reimport ecraser une saisie manuelle', async () => {
-    const depot = new DepotRealise(db);
+  it('retrouve les activites sur une periode, de la plus recente', async () => {
+    const depot = new DepotActivites(db);
+    const lot = await depot.surPeriode('2026-03-04', '2026-03-31');
 
-    const importee: SeanceRealisee = {
-      id: 'intervals-1',
-      seance_id: null,
-      date: '2026-03-03',
-      source: 'INTERVALS',
-      external_id: 'i1',
-      nom: 'Footing',
-      type_sport: 'Run',
-      duree_s: 1800,
-      distance_m: 5000,
-      denivele_m: 30,
-      fc_moy: 142,
-      fc_max: 158,
-      allure_moy_s_km: 356,
-      allure_gap_s_km: 350,
-      rpe: null,
-      ressenti: null,
-      douleurs: [],
-      commentaire: '',
-    };
-
-    // 1. Import provider.
-    await depot.enregistrer(importee, { preserverSaisie: true });
-
-    // 2. L'athlete saisit son ressenti depuis l'app : ecriture directe.
-    const apres = (await depot.parId('intervals-1'))!;
-    await depot.enregistrer({
-      ...apres,
-      rpe: 6,
-      ressenti: 3,
-      douleurs: [{ zone: 'Mollet droit', intensite: 4, note: 'tiraillement' }],
-      commentaire: 'jambes lourdes',
-    });
-
-    const saisi = (await depot.parId('intervals-1'))!;
-    expect(saisi.douleurs).toHaveLength(1);
-
-    // 3. Reimport provider, comme le fait la route : la saisie est preservee.
-    await depot.enregistrer({ ...importee, fc_moy: 145 }, { preserverSaisie: true });
-
-    const final = (await depot.parId('intervals-1'))!;
-    expect(final.fc_moy).toBe(145); // la donnee objective est rafraichie
-    expect(final.rpe).toBe(6); // la saisie manuelle survit
-    expect(final.ressenti).toBe(3);
-    expect(final.douleurs).toHaveLength(1);
-    expect(final.commentaire).toBe('jambes lourdes');
+    expect(lot.map((a) => a.id)).toEqual(['a3', 'a2']);
   });
 
-  it('laisse une saisie manuelle retirer une douleur entree par erreur', async () => {
-    const depot = new DepotRealise(db);
-    const avant = (await depot.parId('intervals-1'))!;
-    expect(avant.douleurs).toHaveLength(1);
-
-    // Ecriture directe : l'athlete efface la douleur.
-    await depot.enregistrer({ ...avant, douleurs: [] });
-
-    const apres = (await depot.parId('intervals-1'))!;
-    expect(apres.douleurs).toHaveLength(0);
-    expect(apres.rpe).toBe(6); // le reste de la saisie est intact
+  it('donne la date de la derniere activite, pour ne recharger que la suite', async () => {
+    const depot = new DepotActivites(db);
+    expect(await depot.derniereDate()).toBe('2026-03-07');
   });
 
-  it('ne cree pas de doublon sur reimport de la meme activite', async () => {
-    const { rows } = await db.query<{ n: string }>(
-      "SELECT COUNT(*) AS n FROM seance_realisee WHERE source = 'INTERVALS' AND external_id = 'i1'",
-    );
-    expect(Number(rows[0]!.n)).toBe(1);
-  });
-
-  it('fusionne le wellness sans effacer une valeur deja saisie', async () => {
+  it('preserve les valeurs connues quand une recuperation est partielle', async () => {
     const depot = new DepotWellness(db);
 
-    await depot.enregistrer({
-      date: '2026-03-04',
-      poids_kg: 72.4,
-      fc_repos: null,
-      hrv: null,
-      sommeil_h: null,
-      fatigue_1_5: 2,
-      humeur_1_5: null,
-      note: 'saisie du matin',
-    });
+    await depot.enregistrerLot([
+      {
+        date: '2026-03-03',
+        poids_kg: 72.4,
+        fc_repos: 48,
+        hrv: 68,
+        sommeil_h: 7.5,
+        body_battery: 88,
+        stress_moy: 28,
+        pas: 9412,
+      },
+    ]);
 
-    // Import provider : ne remonte pas le poids ni la note.
-    await depot.enregistrer({
-      date: '2026-03-04',
-      poids_kg: null,
-      fc_repos: 48,
-      hrv: 68.2,
-      sommeil_h: 7.5,
-      fatigue_1_5: null,
-      humeur_1_5: 4,
-      note: '',
-    });
+    // Seconde recuperation : Garmin ne remonte pas le poids ce coup-ci.
+    await depot.enregistrerLot([
+      {
+        date: '2026-03-03',
+        poids_kg: null,
+        fc_repos: 47,
+        hrv: null,
+        sommeil_h: null,
+        body_battery: null,
+        stress_moy: null,
+        pas: null,
+      },
+    ]);
 
-    const [w] = await depot.surPeriode('2026-03-04', '2026-03-04');
-    expect(w!.poids_kg).toBe(72.4);
-    expect(w!.fatigue_1_5).toBe(2);
-    expect(w!.note).toBe('saisie du matin');
-    expect(w!.fc_repos).toBe(48);
-    expect(w!.sommeil_h).toBe(7.5);
+    const [w] = await depot.surPeriode('2026-03-03', '2026-03-03');
+    expect(w!.poids_kg).toBe(72.4); // conserve
+    expect(w!.sommeil_h).toBe(7.5); // conserve
+    expect(w!.fc_repos).toBe(47); // rafraichi
   });
 
-  it('gere les questions coach', async () => {
-    const depot = new DepotQuestions(db);
-    await depot.ajouter('Faut-il maintenir la sortie longue si le dos tire ?');
+  it('chiffre les jetons Garmin et sait les relire', async () => {
+    const secret = 'secret-de-test-suffisamment-long-0123456789';
+    const depot = new DepotSessionGarminPg(db, secret);
 
-    const ouvertes = await depot.ouvertes();
-    expect(ouvertes).toHaveLength(1);
-    expect(typeof ouvertes[0]!.id).toBe('number');
-
-    await depot.marquerRepondues([ouvertes[0]!.id]);
-    expect(await depot.ouvertes()).toHaveLength(0);
-  });
-
-  it('prend une sauvegarde du plan et purge les anciennes', async () => {
-    const id = await sauvegarder(db, 'test');
-    expect(id).not.toBeNull();
-
-    const { rows } = await db.query<{ contenu: string }>(
-      'SELECT contenu FROM sauvegarde ORDER BY id DESC LIMIT 1',
-    );
-    const contenu = JSON.parse(rows[0]!.contenu) as { plan: unknown[]; motif: string };
-    expect(contenu.motif).toBe('test');
-    expect(contenu.plan.length).toBeGreaterThan(0);
-
-    for (let i = 0; i < 35; i++) await sauvegarder(db, `bourrage-${i}`);
-    const { rows: compte } = await db.query<{ n: string }>('SELECT COUNT(*) AS n FROM sauvegarde');
-    expect(Number(compte[0]!.n)).toBeLessThanOrEqual(30);
-  });
-
-  it('boucle complete : plan, apercu, application, idempotence', async () => {
-    await db.query('TRUNCATE correspondance, journal_sync');
-
-    const depotPlan = new DepotPlan(db);
-    const depotSync = new DepotSyncPg(db);
-    const provider = new ProviderMemoire();
-
-    const plan = planTest([[{ id: 'x1', jour: 1 }, { id: 'x2', jour: 3 }]]);
-    plan.id = 'plan-boucle';
-    await depotPlan.enregistrer(plan, 'INITIAL');
-
-    const options = {
-      provider: 'LOCAL' as const,
-      typesSynchronises: TYPES_SYNC,
-      fenetreSemaines: 6,
-      today: LUNDI,
+    const jetons = {
+      oauth1: { oauth_token: 'jeton-1', oauth_token_secret: 'secret-1' },
+      oauth2: { access_token: 'acces', refresh_token: 'refresh', expire_le: 1_800_000_000_000 },
     };
 
-    const apercu = calculerDiff(plan, [], await depotSync.correspondances('LOCAL'), options);
-    expect(apercu.aCreer).toHaveLength(2);
+    await depot.enregistrerJetons(jetons, 'mon-compte');
 
-    const resultat = await appliquerSync(plan, apercu, provider, depotSync, {
-      today: LUNDI,
-      file: { delaiMs: 0, backoffBaseMs: 0, dormir: async () => {} },
-    });
-    expect(resultat.succes).toBe(2);
-    expect(resultat.interrompu).toBe(false);
+    const relu = await depot.lire();
+    expect(relu?.jetons).toEqual(jetons);
+    expect(relu?.nomAffichage).toBe('mon-compte');
 
-    // Les correspondances ont bien ete persistees, avec le bon hash.
-    const corr = await depotSync.correspondances('LOCAL');
-    expect(corr).toHaveLength(2);
-    expect(corr.find((c) => c.seanceId === 'x1')!.hashSynchronise).toBe(hashDe(plan, 'x1'));
+    // Rien en clair dans la colonne.
+    const { rows } = await db.query<{ jetons_chiffres: string }>(
+      'SELECT jetons_chiffres FROM session_garmin WHERE id = 1',
+    );
+    expect(rows[0]!.jetons_chiffres).not.toContain('jeton-1');
+    expect(rows[0]!.jetons_chiffres).not.toContain('acces');
+  });
 
-    // Second passage : plus rien a faire.
-    const distantes = await provider.listerSeancesPlanifiees('2026-03-02', '2026-06-01');
-    const second = calculerDiff(plan, distantes, corr, options);
-    expect(second.aCreer.length + second.aMettreAJour.length + second.aSupprimer.length).toBe(0);
+  it('efface une session illisible plutot que d echouer a chaque appel', async () => {
+    // Change de secret : les jetons deviennent indechiffrables.
+    const autre = new DepotSessionGarminPg(db, 'un-tout-autre-secret-0123456789abcd');
 
-    // Le journal a garde la trace des deux creations.
-    const journal = await depotSync.journal(10);
-    expect(journal.filter((e) => e.action === 'CREER' && e.ok)).toHaveLength(2);
+    expect(await autre.lire()).toBeNull();
+    // La ligne a ete nettoyee, la reconnexion repart proprement.
+    const { rows } = await db.query<{ n: string }>('SELECT COUNT(*) AS n FROM session_garmin');
+    expect(Number(rows[0]!.n)).toBe(0);
+  });
+
+  it('trace la date de derniere recuperation', async () => {
+    const secret = 'secret-de-test-suffisamment-long-0123456789';
+    const depot = new DepotSessionGarminPg(db, secret);
+
+    await depot.enregistrerJetons(
+      {
+        oauth1: { oauth_token: 't', oauth_token_secret: 's' },
+        oauth2: { access_token: 'a', refresh_token: 'r', expire_le: 1_800_000_000_000 },
+      },
+      'compte',
+    );
+
+    expect((await depot.lire())?.derniereSynchro).toBeNull();
+    await depot.marquerSynchro();
+    expect((await depot.lire())?.derniereSynchro).not.toBeNull();
   });
 });

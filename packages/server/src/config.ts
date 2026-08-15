@@ -1,23 +1,17 @@
 import { config as chargerDotenv } from 'dotenv';
 import { z } from 'zod';
-import { TypeSeance } from '@carter/shared';
 
 chargerDotenv();
-
-const listeTypes = z
-  .string()
-  .transform((s) => s.split(',').map((t) => t.trim()).filter(Boolean))
-  .pipe(z.array(TypeSeance));
 
 const Schema = z.object({
   PORT: z.coerce.number().int().positive().default(8787),
   HOST: z.string().default('0.0.0.0'),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+
   /**
-   * Chaine de connexion Postgres. Sur Vercel + Neon, utiliser l'URL
-   * **poolee** (elle contient `-pooler`) : en serverless, chaque invocation
-   * peut ouvrir sa propre connexion, et le pooler est ce qui evite de saturer
-   * la limite de connexions de la base.
+   * Chaine de connexion Postgres. Sur Vercel + Neon, utiliser l'URL **poolee**
+   * (elle contient `-pooler`) : en serverless chaque invocation peut ouvrir sa
+   * propre connexion, et le pooler evite de saturer la base.
    */
   DATABASE_URL: z.string().min(1).optional(),
 
@@ -25,53 +19,33 @@ const Schema = z.object({
   SESSION_SECRET: z.string().min(16).optional(),
   SESSION_TTL_DAYS: z.coerce.number().int().positive().default(30),
 
-  INTERVALS_ATHLETE_ID: z.string().default(''),
-  INTERVALS_API_KEY: z.string().default(''),
-  INTERVALS_EVENT_PREFIX: z.string().min(1).default('[PLAN]'),
-
-  SYNC_WINDOW_WEEKS: z.coerce.number().int().min(1).max(52).default(6),
-  SYNC_TYPES: listeTypes.default('FOOTING,SORTIE_LONGUE,COTES,SEUIL,RENFO'),
-  SYNC_RATE_LIMIT_MS: z.coerce.number().int().min(0).default(350),
   /**
-   * Budget accorde a une application de synchro, en millisecondes.
-   * Doit rester en dessous du `maxDuration` de la fonction Vercel (60 s),
-   * avec de la marge pour la reponse HTTP.
+   * Connexion au compte Garmin Connect, par le mecanisme de l'application
+   * mobile. Lecture seule. Desactivee par defaut : c'est un choix a poser
+   * sciemment, pas un reglage par omission.
    */
-  SYNC_BUDGET_MS: z.coerce.number().int().min(1000).default(45_000),
-
   GARMIN_ENABLED: z
     .string()
     .default('false')
     .transform((s) => s === 'true'),
-  GARMIN_CONSUMER_KEY: z.string().default(''),
-  GARMIN_CONSUMER_SECRET: z.string().default(''),
 
-  /**
-   * Connexion directe au compte Garmin Connect, par le mecanisme de
-   * l'application mobile. Lecture seule.
-   *
-   * Non officiel : contraire aux CGU de Garmin, casse quand Garmin modifie
-   * son SSO, et souvent bloque depuis une IP de datacenter. Desactive par
-   * defaut — c'est un choix a poser sciemment, pas un reglage par omission.
-   */
-  GARMIN_DIRECT_ENABLED: z
-    .string()
-    .default('false')
-    .transform((s) => s === 'true'),
+  /** Nombre d'activites remontees a chaque recuperation. */
+  GARMIN_LIMITE_ACTIVITES: z.coerce.number().int().min(1).max(500).default(100),
+
+  /** Nombre de jours de forme remontes a chaque recuperation. */
+  GARMIN_JOURS_WELLNESS: z.coerce.number().int().min(1).max(90).default(30),
 });
 
-export type Config = z.infer<typeof Schema> & { productionSansProtection: boolean };
+export type Config = z.infer<typeof Schema> & { protectionActive: boolean };
 
 /**
  * Charge et valide la configuration.
  *
- * Volontairement une fonction, et non une constante evaluee a l'import.
- *
- * En serverless, une exception levee pendant l'evaluation d'un module fait
- * echouer le chargement de la fonction entiere : la plateforme renvoie un 500
- * opaque, et aucun des messages ci-dessous n'atteint jamais l'utilisateur —
- * precisement au moment ou ils sont utiles. Appelee depuis `construireApp()`,
- * l'erreur remonte dans le gestionnaire du handler, qui la renvoie en clair.
+ * Une fonction, et non une constante evaluee a l'import : en serverless, une
+ * exception pendant l'evaluation d'un module fait echouer le chargement de la
+ * fonction entiere, et la plateforme renvoie un 500 opaque ou aucun de ces
+ * messages n'apparait. Appelee depuis `construireApp()`, l'erreur remonte au
+ * gestionnaire qui la renvoie en clair.
  */
 export function chargerConfig(): Config {
   const parse = Schema.safeParse(process.env);
@@ -79,7 +53,7 @@ export function chargerConfig(): Config {
     const details = parse.error.issues
       .map((i) => `  ${i.path.join('.')} : ${i.message}`)
       .join('\n');
-    throw new Error(`Configuration invalide (verifie ton .env) :\n${details}`);
+    throw new Error(`Configuration invalide :\n${details}`);
   }
 
   const c = parse.data;
@@ -87,34 +61,30 @@ export function chargerConfig(): Config {
   if (!c.DATABASE_URL) {
     throw new Error(
       'DATABASE_URL est obligatoire.\n' +
-        'Sur Vercel : ajoute une base Neon au projet, la variable est injectee automatiquement.\n' +
-        'En local : cree une base Neon gratuite et copie son URL poolee dans .env.',
+        'Sur Vercel : Storage > Create Database > Neon, puis relie la base au projet.\n' +
+        'En local : copie une URL Neon poolee dans .env.',
     );
   }
 
-  // L'app est hebergee en ligne : sans mot de passe, le plan et les donnees
-  // de sante sont publics. On refuse de demarrer plutot que d'exposer.
-  const protectionManquante = !c.APP_PASSWORD || !c.SESSION_SECRET;
-  if (c.NODE_ENV === 'production' && protectionManquante) {
+  const protectionActive = Boolean(c.APP_PASSWORD && c.SESSION_SECRET);
+
+  // Hebergee en ligne sans mot de passe, l'app expose des donnees de sante a
+  // qui trouve l'URL. On refuse de demarrer plutot que d'exposer.
+  if (c.NODE_ENV === 'production' && !protectionActive) {
     throw new Error(
-      "APP_PASSWORD et SESSION_SECRET sont obligatoires en production.\n" +
-        "Sans eux, n'importe qui atteignant l'URL lit tes donnees.\n" +
+      'APP_PASSWORD et SESSION_SECRET sont obligatoires en production.\n' +
+        "Sans eux, n'importe qui atteignant l'URL lit tes donnees Garmin.\n" +
         'Genere le secret avec : openssl rand -hex 32',
     );
   }
 
-  // Les jetons Garmin sont chiffres avec une clef derivee de SESSION_SECRET :
-  // sans lui, ils finiraient en clair dans la base.
-  if (c.GARMIN_DIRECT_ENABLED && !c.SESSION_SECRET) {
+  // Les jetons Garmin sont chiffres avec une clef derivee de SESSION_SECRET.
+  if (c.GARMIN_ENABLED && !c.SESSION_SECRET) {
     throw new Error(
-      'GARMIN_DIRECT_ENABLED exige SESSION_SECRET : les jetons Garmin sont chiffres avec.\n' +
+      'GARMIN_ENABLED exige SESSION_SECRET : les jetons Garmin sont chiffres avec.\n' +
         'Genere-le avec : openssl rand -hex 32',
     );
   }
 
-  return { ...c, productionSansProtection: protectionManquante };
-}
-
-export function intervalsConfigure(c: Config): boolean {
-  return c.INTERVALS_ATHLETE_ID.length > 0 && c.INTERVALS_API_KEY.length > 0;
+  return { ...c, protectionActive };
 }
