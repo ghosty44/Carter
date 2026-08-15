@@ -8,6 +8,7 @@ import {
 } from '@carter/shared';
 import { api, type EtatPlan, type EtatProvider } from '../api.js';
 import { Echelle, ErreurAffichee, Message, formatAllure, formatSecondes } from '../composants.js';
+import { PanneauGarmin } from './Garmin.js';
 
 /** Zones proposees d'office : celles que l'athlete surveille en permanence. */
 const ZONES_FREQUENTES = [
@@ -76,6 +77,16 @@ export function VueRessenti({ etat }: { etat: EtatPlan | null }) {
       <h1>Ressenti</h1>
       <ErreurAffichee erreur={erreur} />
       {info && <Message type="succes">{info}</Message>}
+
+      <PanneauGarmin
+        onConnecte={() => {
+          // Le provider devient utilisable : recharger la liste des lecteurs.
+          api
+            .providers()
+            .then((r) => setProviders(r.providers))
+            .catch(() => undefined);
+        }}
+      />
 
       <SaisieWellness onErreur={setErreur} />
 

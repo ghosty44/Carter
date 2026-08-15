@@ -44,8 +44,14 @@ export const SyncState = z.enum([
 ]);
 export type SyncState = z.infer<typeof SyncState>;
 
-/** Providers connus. Le moteur de synchro ne connait que cette liste. */
-export const NomProvider = z.enum(['INTERVALS', 'GARMIN', 'LOCAL']);
+/**
+ * Providers connus. Le moteur de synchro ne connait que cette liste.
+ *
+ * GARMIN        : API Training officielle, sous reserve d'acces partenaire.
+ * GARMIN_DIRECT : connexion au compte Garmin Connect de l'athlete, par le
+ *                 meme mecanisme que l'application mobile. Non officiel.
+ */
+export const NomProvider = z.enum(['INTERVALS', 'GARMIN', 'GARMIN_DIRECT', 'LOCAL']);
 export type NomProvider = z.infer<typeof NomProvider>;
 
 /** Role d'une etape dans une seance structuree. */
@@ -67,7 +73,13 @@ export const PrioriteCourse = z.enum(['A', 'B', 'C']);
 export type PrioriteCourse = z.infer<typeof PrioriteCourse>;
 
 /** Origine d'une seance realisee. */
-export const SourceRealisee = z.enum(['INTERVALS', 'STRAVA', 'FIT_IMPORT', 'MANUEL']);
+export const SourceRealisee = z.enum([
+  'INTERVALS',
+  'GARMIN_DIRECT',
+  'STRAVA',
+  'FIT_IMPORT',
+  'MANUEL',
+]);
 export type SourceRealisee = z.infer<typeof SourceRealisee>;
 
 /** Action possible lors d'une synchronisation. */

@@ -3,6 +3,7 @@ import type { Config } from '../config.js';
 import type { PlanSyncProvider } from './types.js';
 import { ProviderIntervals } from './intervals.js';
 import { ProviderGarmin } from './garmin.js';
+import { ProviderGarminDirect, type DepotSessionGarmin } from './garmin-direct.js';
 import { ProviderMemoire } from './memoire.js';
 
 /**
@@ -11,7 +12,10 @@ import { ProviderMemoire } from './memoire.js';
  * Ajouter un provider = ecrire son adaptateur + une ligne ici. Le moteur de
  * synchro, les routes et l'interface n'ont pas a etre touches.
  */
-export function construireProviders(config: Config): Map<NomProvider, PlanSyncProvider> {
+export function construireProviders(
+  config: Config,
+  depotGarmin: DepotSessionGarmin,
+): Map<NomProvider, PlanSyncProvider> {
   const providers = new Map<NomProvider, PlanSyncProvider>();
 
   providers.set(
@@ -20,6 +24,14 @@ export function construireProviders(config: Config): Map<NomProvider, PlanSyncPr
       athleteId: config.INTERVALS_ATHLETE_ID,
       apiKey: config.INTERVALS_API_KEY,
       prefixe: config.INTERVALS_EVENT_PREFIX,
+    }),
+  );
+
+  providers.set(
+    'GARMIN_DIRECT',
+    new ProviderGarminDirect({
+      depot: depotGarmin,
+      active: config.GARMIN_DIRECT_ENABLED,
     }),
   );
 
@@ -63,6 +75,8 @@ function messageIndisponibilite(nom: NomProvider): string {
   switch (nom) {
     case 'INTERVALS':
       return "Renseigne INTERVALS_ATHLETE_ID et INTERVALS_API_KEY dans le .env du serveur. La cle se genere dans Settings > Developer Settings sur intervals.icu.";
+    case 'GARMIN_DIRECT':
+      return "Connexion directe a Garmin non etablie. Active GARMIN_DIRECT_ENABLED cote serveur, puis connecte ton compte depuis l'onglet Ressenti.";
     case 'GARMIN':
       return "Acces au Garmin Connect Developer Program requis. Ce provider reste desactive : passe par Intervals.icu, qui redescend vers ta montre Garmin.";
     default:

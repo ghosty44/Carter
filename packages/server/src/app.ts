@@ -11,16 +11,19 @@ import {
   DepotPlan,
   DepotQuestions,
   DepotRealise,
+  DepotSessionGarminPg,
   DepotSyncPg,
   DepotWellness,
 } from './db/depots.js';
 import { construireProviders } from './providers/registry.js';
 import { ErreurProvider } from './providers/types.js';
+import { ProviderGarminDirect } from './providers/garmin-direct.js';
 import { ErreurHttp, type Contexte } from './routes/contexte.js';
 import { routesPlan } from './routes/plan.js';
 import { routesSync } from './routes/sync.js';
 import { routesDonnees } from './routes/donnees.js';
 import { routesExports } from './routes/exports.js';
+import { routesGarmin } from './routes/garmin.js';
 
 export interface OptionsApp {
   config?: Config;
@@ -49,7 +52,10 @@ export async function construireApp(options: OptionsApp = {}): Promise<FastifyIn
     realise: new DepotRealise(db),
     wellness: new DepotWellness(db),
     questions: new DepotQuestions(db),
-    providers: construireProviders(config),
+    providers: construireProviders(
+      config,
+      new DepotSessionGarminPg(db, config.SESSION_SECRET),
+    ),
   };
 
   const app = Fastify({
@@ -73,6 +79,16 @@ export async function construireApp(options: OptionsApp = {}): Promise<FastifyIn
   routesSync(app, ctx);
   routesDonnees(app, ctx);
   routesExports(app, ctx);
+  routesGarmin(app, ctx);
+
+  // La session Garmin est chargee une fois, pour que `estConfigure()` puisse
+  // rester synchrone comme le veut l'interface PlanSyncProvider.
+  const garmin = ctx.providers.get('GARMIN_DIRECT');
+  if (garmin instanceof ProviderGarminDirect) {
+    await garmin.initialiser().catch((e: unknown) => {
+      app.log.warn({ err: e }, 'session Garmin illisible, connexion a refaire');
+    });
+  }
 
   app.setErrorHandler((erreur, _requete, reponse) => {
     if (erreur instanceof ErreurHttp) {

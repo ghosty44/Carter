@@ -125,6 +125,27 @@ const MIGRATIONS: { version: number; sql: string }[] = [
       CREATE INDEX idx_sauvegarde_cree_le ON sauvegarde (cree_le DESC);
     `,
   },
+  {
+    version: 2,
+    sql: `
+      /*
+       * Session Garmin Connect. Une seule ligne (id = 1).
+       *
+       * On y stocke les jetons OAuth, chiffres, et JAMAIS le mot de passe :
+       * celui-ci ne sert qu'une fois, au moment de l'echange initial, et il
+       * n'est pas conserve. Un jeton compromis se revoque en changeant le mot
+       * de passe Garmin ; un mot de passe stocke compromet le compte entier.
+       */
+      CREATE TABLE session_garmin (
+        id                INTEGER PRIMARY KEY DEFAULT 1,
+        jetons_chiffres   TEXT NOT NULL,
+        nom_affichage     TEXT,
+        connecte_le       TEXT NOT NULL,
+        rafraichi_le      TEXT,
+        CONSTRAINT ligne_unique CHECK (id = 1)
+      );
+    `,
+  },
 ];
 
 let poolPartage: pg.Pool | null = null;

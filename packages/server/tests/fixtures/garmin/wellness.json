@@ -1,0 +1,40 @@
+{
+  "resume": {
+    "calendarDate": "2026-03-03",
+    "restingHeartRate": 48,
+    "bodyBatteryMostRecentValue": 72,
+    "averageStressLevel": 28,
+    "totalSteps": 9412
+  },
+  "sommeil": {
+    "dailySleepDTO": {
+      "calendarDate": "2026-03-03",
+      "sleepTimeSeconds": 27000,
+      "deepSleepSeconds": 5400,
+      "remSleepSeconds": 6300
+    }
+  },
+  "hrv": {
+    "hrvSummary": {
+      "calendarDate": "2026-03-03",
+      "lastNightAvg": 68,
+      "status": "BALANCED"
+    }
+  },
+  "poids": {
+    "dateWeightList": [
+      { "calendarDate": "2026-03-03", "weight": 72400.0 },
+      { "calendarDate": "2026-03-05", "weight": 72100.0 },
+      { "calendarDate": "2026-03-06", "weight": null }
+    ]
+  },
+  "resumeVide": {
+    "calendarDate": "2026-03-04",
+    "restingHeartRate": null,
+    "averageStressLevel": -1
+  },
+  "profil": {
+    "displayName": "abc123-def456-ghi789",
+    "fullName": "Corentin"
+  }
+}

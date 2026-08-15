@@ -12,6 +12,9 @@ import {
 import type { BaseCarter } from './index.js';
 import type { Correspondance } from '../sync/diff.js';
 import type { DepotSync } from '../sync/moteur.js';
+import type { DepotSessionGarmin } from '../providers/garmin-direct.js';
+import { JetonsSchema, type Jetons } from '../providers/garmin-direct-sso.js';
+import { chiffrer, dechiffrer } from '../chiffrement.js';
 
 /** Origine d'une revision, tracee dans l'historique. */
 export type OriginePlan = 'IMPORT' | 'EDITION' | 'COACH' | 'RESTAURATION' | 'INITIAL';
@@ -41,8 +44,14 @@ export class DepotPlan {
     try {
       await client.query('BEGIN');
 
-      // Verrouille la ligne du plan pour serialiser les revisions concurrentes.
-      await client.query('SELECT id FROM plan WHERE id = $1 FOR UPDATE', [plan.id]);
+      // Verrou consultatif sur l'identifiant du plan, relache au COMMIT.
+      //
+      // Pas un `SELECT ... FOR UPDATE` sur la ligne : au tout premier import
+      // la ligne n'existe pas encore, il n'y a donc rien a verrouiller, et
+      // deux requetes concurrentes lisent toutes les deux MAX(version) = 0
+      // avant de se disputer la version 1. Le verrou consultatif ne depend
+      // pas de l'existence de la ligne.
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [plan.id]);
 
       const { rows } = await client.query<{ v: number | null }>(
         'SELECT MAX(version) AS v FROM plan_version WHERE plan_id = $1',
@@ -387,6 +396,67 @@ export class DepotQuestions {
   async marquerRepondues(ids: number[]): Promise<void> {
     if (ids.length === 0) return;
     await this.db.query('UPDATE question_coach SET repondue = TRUE WHERE id = ANY($1)', [ids]);
+  }
+}
+
+/**
+ * Session Garmin Connect : une seule ligne, jetons chiffres.
+ *
+ * Le mot de passe n'apparait nulle part. Seuls les jetons OAuth sont
+ * conserves, et ils sont chiffres avec une clef derivee de SESSION_SECRET,
+ * de sorte qu'une fuite de la base seule ne suffise pas a lire le compte.
+ */
+export class DepotSessionGarminPg implements DepotSessionGarmin {
+  constructor(
+    private readonly db: BaseCarter,
+    private readonly secret: string | undefined,
+  ) {}
+
+  async lire(): Promise<{ jetons: Jetons; nomAffichage: string | null } | null> {
+    if (!this.secret) return null;
+
+    const { rows } = await this.db.query<{
+      jetons_chiffres: string;
+      nom_affichage: string | null;
+    }>('SELECT jetons_chiffres, nom_affichage FROM session_garmin WHERE id = 1');
+
+    const ligne = rows[0];
+    if (ligne === undefined) return null;
+
+    try {
+      const jetons = JetonsSchema.parse(
+        JSON.parse(dechiffrer(ligne.jetons_chiffres, this.secret)),
+      );
+      return { jetons, nomAffichage: ligne.nom_affichage };
+    } catch {
+      // Jetons illisibles (secret change, format ancien) : on repart de zero
+      // plutot que de laisser l'app echouer a chaque appel.
+      await this.effacer();
+      return null;
+    }
+  }
+
+  async enregistrerJetons(jetons: Jetons, nomAffichage: string | null): Promise<void> {
+    if (!this.secret) {
+      throw new Error(
+        'SESSION_SECRET est requis pour stocker une session Garmin : les jetons sont chiffres avec.',
+      );
+    }
+
+    const maintenant = new Date().toISOString();
+    await this.db.query(
+      `INSERT INTO session_garmin (id, jetons_chiffres, nom_affichage, connecte_le, rafraichi_le)
+       VALUES (1, $1, $2, $3, $3)
+       ON CONFLICT (id) DO UPDATE SET
+         jetons_chiffres = EXCLUDED.jetons_chiffres,
+         nom_affichage = COALESCE(EXCLUDED.nom_affichage, session_garmin.nom_affichage),
+         rafraichi_le = EXCLUDED.rafraichi_le`,
+      [chiffrer(JSON.stringify(jetons), this.secret), nomAffichage, maintenant],
+    );
+  }
+
+  async effacer(): Promise<void> {
+    await this.db.query('DELETE FROM session_garmin WHERE id = 1');
   }
 }
 

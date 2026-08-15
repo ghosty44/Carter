@@ -1,0 +1,57 @@
+[
+  {
+    "activityId": 18734001,
+    "activityName": "Footing du soir",
+    "startTimeLocal": "2026-03-03 18:12:04",
+    "activityType": { "typeKey": "running", "typeId": 1 },
+    "duration": 1902.3,
+    "movingDuration": 1854.0,
+    "distance": 5210.4,
+    "elevationGain": 48.0,
+    "averageHR": 141.6,
+    "maxHR": 158.0,
+    "averageSpeed": 2.81
+  },
+  {
+    "activityId": "18734002",
+    "activityName": "Sortie longue dimanche",
+    "startTimeLocal": "2026-03-08 09:30:00",
+    "activityType": { "typeKey": "trail_running" },
+    "duration": 2500.0,
+    "movingDuration": 2455.0,
+    "distance": 6890.2,
+    "elevationGain": 212.0,
+    "averageHR": 147.2,
+    "maxHR": 171.0,
+    "averageSpeed": 2.81,
+    "champInconnuAjouteParGarmin": true
+  },
+  {
+    "activityId": 18734003,
+    "activityName": "Renfo maison",
+    "startTimeLocal": "2026-03-07 12:00:00",
+    "activityType": { "typeKey": "strength_training" },
+    "duration": 1200.0,
+    "movingDuration": 1200.0,
+    "distance": 0.0,
+    "averageSpeed": 0.0
+  },
+  {
+    "activityId": 18734004,
+    "activityName": "Activite sans donnees",
+    "startTimeLocal": "2026-03-09 07:00:00",
+    "activityType": { "typeKey": "running" }
+  },
+  {
+    "activityId": 18734005,
+    "activityName": "Sans date exploitable",
+    "activityType": { "typeKey": "running" }
+  },
+  {
+    "activityId": 18734006,
+    "activityName": "Sport non reconnu",
+    "startTimeLocal": "2026-03-10 10:00:00",
+    "activityType": { "typeKey": "underwater_basket_weaving" },
+    "movingDuration": 600.0
+  }
+]

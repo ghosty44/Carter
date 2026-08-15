@@ -45,6 +45,19 @@ const Schema = z.object({
     .transform((s) => s === 'true'),
   GARMIN_CONSUMER_KEY: z.string().default(''),
   GARMIN_CONSUMER_SECRET: z.string().default(''),
+
+  /**
+   * Connexion directe au compte Garmin Connect, par le mecanisme de
+   * l'application mobile. Lecture seule.
+   *
+   * Non officiel : contraire aux CGU de Garmin, casse quand Garmin modifie
+   * son SSO, et souvent bloque depuis une IP de datacenter. Desactive par
+   * defaut — c'est un choix a poser sciemment, pas un reglage par omission.
+   */
+  GARMIN_DIRECT_ENABLED: z
+    .string()
+    .default('false')
+    .transform((s) => s === 'true'),
 });
 
 export type Config = z.infer<typeof Schema> & { productionSansProtection: boolean };
@@ -76,6 +89,15 @@ function construire(): Config {
       "APP_PASSWORD et SESSION_SECRET sont obligatoires en production.\n" +
         "Sans eux, n'importe qui atteignant l'URL lit tes donnees.\n" +
         'Genere le secret avec : openssl rand -hex 32',
+    );
+  }
+
+  // Les jetons Garmin sont chiffres avec une clef derivee de SESSION_SECRET :
+  // sans lui, ils finiraient en clair dans la base.
+  if (c.GARMIN_DIRECT_ENABLED && !c.SESSION_SECRET) {
+    throw new Error(
+      'GARMIN_DIRECT_ENABLED exige SESSION_SECRET : les jetons Garmin sont chiffres avec.\n' +
+        'Genere-le avec : openssl rand -hex 32',
     );
   }
 

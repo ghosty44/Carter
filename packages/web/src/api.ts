@@ -223,6 +223,32 @@ export const api = {
       }),
     }),
 
+  garminEtat: () =>
+    appeler<{
+      garmin: { connecte: boolean; nomAffichage: string | null; active: boolean };
+    }>('/api/garmin/etat'),
+
+  garminConnexion: (identifiant: string, motDePasse: string) =>
+    appeler<{
+      connecte?: boolean;
+      nom_affichage?: string | null;
+      mfa_requis?: boolean;
+      jeton_mfa?: string;
+      message?: string;
+    }>('/api/garmin/connexion', {
+      method: 'POST',
+      body: JSON.stringify({ identifiant, mot_de_passe: motDePasse }),
+    }),
+
+  garminMfa: (jetonMfa: string, code: string) =>
+    appeler<{ connecte: boolean; nom_affichage: string | null }>('/api/garmin/mfa', {
+      method: 'POST',
+      body: JSON.stringify({ jeton_mfa: jetonMfa, code }),
+    }),
+
+  garminDeconnexion: () =>
+    appeler<{ connecte: boolean }>('/api/garmin/connexion', { method: 'DELETE' }),
+
   questions: () =>
     appeler<{ questions: { id: number; texte: string }[] }>('/api/questions'),
 

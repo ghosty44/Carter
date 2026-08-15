@@ -24,13 +24,17 @@ n'est qu'une implementation, desactivee par defaut.
 | Provider | Ecriture du plan | Lecture des donnees | Etat dans l'app |
 | --- | --- | --- | --- |
 | **Intervals.icu** | oui | activites + wellness | chemin principal |
+| **Garmin direct** (non officiel) | non | tout, Body Battery compris | desactive par defaut |
 | Fichier local (.ics, .csv) | export manuel | non | disponible, sans aucune cle |
 | Bac a sable (memoire) | oui | non | disponible, pour essayer sans risque |
 | Garmin Training API | oui | oui | squelette desactive |
 
-**Intervals.icu est le chemin qui fonctionne** : il se connecte a Garmin
-Connect cote utilisateur, donc les seances poussees vers Intervals.icu
+**Intervals.icu est le chemin qui fonctionne pour l'ecriture** : il se connecte
+a Garmin Connect cote utilisateur, donc les seances poussees vers Intervals.icu
 redescendent sur la montre sans acces partenaire.
+
+Pour la **lecture**, un second chemin existe : la connexion directe au compte
+Garmin Connect, decrite plus bas.
 
 ---
 
@@ -108,11 +112,67 @@ bibliotheques non officielles qui scrapent la session cassent a chaque
 changement chez Garmin. Si l'acces partenaire n'est pas accorde, la reponse est
 « on reste sur Intervals.icu ».
 
+### Garmin direct — connexion a ton compte
+
+Se connecte a Garmin Connect par le meme mecanisme que l'application mobile :
+login SSO, echange contre des jetons OAuth, puis appels a l'API interne.
+**Lecture seule.**
+
+Activation :
+
+```
+GARMIN_DIRECT_ENABLED=true
+SESSION_SECRET=<obligatoire, sert a chiffrer les jetons>
+```
+
+Puis onglet **Ressenti** de l'app, section Garmin Connect : identifiant et mot
+de passe, plus le code de verification si tu as la double authentification.
+
+Ce que ca remonte en plus d'Intervals.icu : Body Battery, stress moyen, et le
+detail du sommeil. Ces valeurs arrivent dans la note du jour — aucune des cinq
+regles d'alerte ne les utilise, elles servent au coach et a la lecture.
+
+**Ce que ca coute, dit franchement :**
+
+- **C'est contraire aux conditions d'utilisation de Garmin.** C'est ton compte
+  et tes donnees, c'est ta decision ; le code est la.
+- **Ca casse sans preavis.** Quand Garmin modifie son SSO, la connexion echoue
+  jusqu'a correction. Tout est concentre dans
+  `packages/server/src/providers/garmin-direct-sso.ts` : la reparation ne
+  touche que ce fichier.
+- **Ca marche mal depuis un hebergeur cloud.** Le SSO Garmin est derriere une
+  protection anti-bot : une requete venant d'une IP de datacenter (Vercel,
+  AWS, Fly) se fait souvent bloquer, la ou la meme requete aboutit depuis une
+  connexion domestique. Le piege classique est que ca marche en local et
+  echoue une fois deploye. Si tu tiens a ce provider, heberge l'app chez toi.
+  Une erreur 401 ou 403 sur ce chemin affiche un message qui le rappelle.
+
+**Ce qui est fait pour limiter la casse :**
+
+- ton mot de passe n'est **jamais** stocke : il sert une fois a obtenir les
+  jetons, puis il est oublie — pas en base, pas en journal ;
+- les jetons sont chiffres en base (AES-256-GCM, clef derivee de
+  `SESSION_SECRET`) : une fuite de la base seule ne suffit pas a lire ton
+  compte ;
+- le jeton OAuth 1 vit environ un an et sert a renouveler le jeton d'acces
+  tout seul : tu ne ressaisis pas ton mot de passe a chaque session ;
+- « Deconnecter » efface les jetons. Pour revoquer cote Garmin, change ton mot
+  de passe Garmin.
+
+**Etat de verification** : le flux d'authentification n'a **pas** pu etre teste
+contre Garmin — pas d'acces reseau vers `sso.garmin.com` depuis l'environnement
+de developpement. Il suit la methode publiquement documentee (celle de
+`garth`). Ce qui est teste hors ligne : la signature OAuth 1 (regles
+d'encodage et de construction de la chaine de signature), la conversion des
+reponses vers les types Carter, et le chiffrement des jetons. La premiere
+connexion reelle est donc aussi le premier test du flux SSO.
+
 ### Strava
 
 Non implemente. L'interface `PlanSyncProvider` est prete a l'accueillir en
 lecture seule (`capacites().ecrire === false`) : Strava ne permet pas d'ecrire
-des seances planifiees.
+des seances planifiees, et ne remonte pas le wellness — ce serait un recul par
+rapport aux deux chemins existants.
 
 ---
 
