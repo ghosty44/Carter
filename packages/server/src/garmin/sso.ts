@@ -77,8 +77,9 @@ export interface EtatMfa {
 
 interface OptionsSso {
   fetch?: typeof globalThis.fetch;
-  /** Injectable pour les tests. */
+  /** Injectables pour les tests. */
   urlConsommateur?: string;
+  dormir?: (ms: number) => Promise<void>;
 }
 
 /** Accumulateur de cookies : le SSO en depose plusieurs au fil des redirections. */
@@ -122,10 +123,12 @@ const PARAMS_SIGNIN = new URLSearchParams({
 export class SessionGarminSso {
   private readonly fetch: typeof globalThis.fetch;
   private readonly urlConsommateur: string;
+  private readonly dormir: (ms: number) => Promise<void>;
 
   constructor(options: OptionsSso = {}) {
     this.fetch = options.fetch ?? globalThis.fetch;
     this.urlConsommateur = options.urlConsommateur ?? URL_CONSOMMATEUR;
+    this.dormir = options.dormir ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   }
 
   /**
@@ -243,7 +246,7 @@ export class SessionGarminSso {
     const consommateur = await this.consommateur();
     const url = `${API}/oauth-service/oauth/exchange/user/2.0`;
 
-    const reponse = await this.appeler(url, {
+    const reponse = await this.appelerAvecReprise(url, {
       method: 'POST',
       headers: {
         Authorization: enteteOAuth1('POST', url, consommateur, oauth1),
@@ -255,7 +258,9 @@ export class SessionGarminSso {
 
     if (!reponse.ok) {
       throw new ErreurGarmin(
-        `Rafraichissement du jeton Garmin refuse (${reponse.status}). Reconnecte-toi depuis l'app.`,
+        reponse.status === 429
+          ? limitationDebit('le renouvellement du jeton')
+          : `Rafraichissement du jeton Garmin refuse (${reponse.status}). Reconnecte-toi depuis l'app.`,
         reponse.status,
       );
     }
@@ -288,7 +293,7 @@ export class SessionGarminSso {
       'accepts-mfa-tokens': 'true',
     }).toString()}`;
 
-    const reponsePre = await this.appeler(urlPre, {
+    const reponsePre = await this.appelerAvecReprise(urlPre, {
       headers: {
         Authorization: enteteOAuth1('GET', urlPre, consommateur),
         'User-Agent': UA_MOBILE,
@@ -297,7 +302,9 @@ export class SessionGarminSso {
 
     if (!reponsePre.ok) {
       throw new ErreurGarmin(
-        `Garmin a refuse l'echange du ticket (${reponsePre.status}).`,
+        reponsePre.status === 429
+          ? limitationDebit("l'echange du ticket")
+          : `Garmin a refuse l'echange du ticket (${reponsePre.status}).`,
         reponsePre.status,
       );
     }
@@ -342,6 +349,75 @@ export class SessionGarminSso {
       );
     }
   }
+
+  /**
+   * Appel avec reprise sur limitation de debit.
+   *
+   * Garmin limite les echanges de jetons par adresse IP, et repond 429 quand
+   * le quota est atteint. Sur un hebergeur mutualise, l'adresse est partagee :
+   * le quota peut etre consomme sans qu'on y soit pour rien. Une attente de
+   * quelques secondes suffit generalement.
+   *
+   * Le budget total reste sous la duree d'une fonction serverless : trois
+   * tentatives, environ vingt secondes d'attente cumulee au pire.
+   */
+  private async appelerAvecReprise(
+    url: string,
+    init: RequestInit | undefined,
+    tentativesMax = 3,
+  ): Promise<Response> {
+    let derniere: Response | null = null;
+
+    for (let tentative = 1; tentative <= tentativesMax; tentative++) {
+      const reponse = await this.appeler(url, init);
+
+      // 429 et 5xx sont transitoires ; le reste ne passera pas mieux en
+      // reessayant, et le ticket de service a une duree de vie courte.
+      if (reponse.ok || (reponse.status !== 429 && reponse.status < 500)) {
+        return reponse;
+      }
+
+      derniere = reponse;
+      if (tentative === tentativesMax) break;
+
+      await this.dormir(this.attente(reponse, tentative));
+    }
+
+    return derniere!;
+  }
+
+  /** Respecte `Retry-After` quand Garmin le fournit, sinon backoff. */
+  private attente(reponse: Response, tentative: number): number {
+    const entete = reponse.headers.get('retry-after');
+    if (entete !== null) {
+      const secondes = Number(entete);
+      // Plafonne : un Retry-After de plusieurs minutes depasserait de toute
+      // facon la duree de vie de la fonction.
+      if (Number.isFinite(secondes) && secondes > 0) {
+        return Math.min(secondes, 15) * 1000;
+      }
+    }
+    // 2 s, puis 6 s, avec une gigue pour ne pas repartir en rafale.
+    return (2 ** tentative + 1) * 1000 + Math.floor(Math.random() * 500);
+  }
+}
+
+/**
+ * Message pour une limitation de debit persistante.
+ *
+ * A distinguer d'un refus d'identifiants : ici la connexion a fonctionne,
+ * c'est le quota qui bloque. Le dire evite de faire douter de son mot de
+ * passe quelqu'un qui l'a bien tape.
+ */
+function limitationDebit(etape: string): string {
+  return (
+    `Garmin limite temporairement les connexions depuis cette adresse : ${etape} a ete refuse ` +
+    'apres plusieurs tentatives (429).\n' +
+    'Tes identifiants sont bons — la connexion elle-meme a reussi. ' +
+    'Attends quelques minutes et reessaie.\n' +
+    "Sur un hebergeur mutualise, l'adresse IP est partagee : le quota peut etre consomme " +
+    "par d'autres. Si cela se repete, heberger l'app chez toi resout le probleme."
+  );
 }
 
 function extraireCsrf(html: string): string {

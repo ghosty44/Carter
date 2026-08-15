@@ -15,6 +15,7 @@ import {
   versSport,
 } from '../src/garmin/contrat.js';
 import { chiffrer, dechiffrer } from '../src/chiffrement.js';
+import { SessionGarminSso } from '../src/garmin/sso.js';
 
 const DOSSIER = join(import.meta.dirname, 'fixtures', 'garmin');
 
@@ -268,5 +269,110 @@ describe('chiffrement des jetons', () => {
 
   it('rejette un format inattendu', () => {
     expect(() => dechiffrer('pas-du-tout-le-bon-format', secret)).toThrow(/format/);
+  });
+});
+
+describe('limitation de debit sur l echange de jetons', () => {
+  /**
+   * Reproduit le cas rencontre en production : le login SSO reussit, Garmin
+   * renvoie un ticket, puis l'echange du ticket est refuse en 429.
+   */
+  function sessionAvec(reponses: { statut: number; corps?: string; retryAfter?: string }[]) {
+    const appels: string[] = [];
+    let index = 0;
+
+    const faussetFetch = (async (url: string | URL) => {
+      const cible = String(url);
+      appels.push(cible);
+
+      // Clefs consommateur : toujours servies.
+      if (cible.includes('oauth_consumer.json')) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          json: async () => ({ consumer_key: 'k', consumer_secret: 's' }),
+          text: async () => '',
+        } as unknown as Response;
+      }
+
+      const config = reponses[Math.min(index, reponses.length - 1)]!;
+      index += 1;
+      const entetes = new Headers();
+      if (config.retryAfter) entetes.set('retry-after', config.retryAfter);
+
+      return {
+        ok: config.statut >= 200 && config.statut < 300,
+        status: config.statut,
+        headers: entetes,
+        text: async () => config.corps ?? '',
+        json: async () => JSON.parse(config.corps ?? '{}'),
+      } as unknown as Response;
+    }) as typeof globalThis.fetch;
+
+    const attentes: number[] = [];
+    const session = new SessionGarminSso({
+      fetch: faussetFetch,
+      urlConsommateur: 'https://exemple.test/oauth_consumer.json',
+      dormir: async (ms) => {
+        attentes.push(ms);
+      },
+    });
+
+    return { session, appels, attentes };
+  }
+
+  it('reessaie apres un 429 puis aboutit', async () => {
+    const { session, attentes } = sessionAvec([
+      { statut: 429 },
+      { statut: 429 },
+      { statut: 200, corps: 'oauth_token=t1&oauth_token_secret=s1' },
+      { statut: 200, corps: '{"access_token":"acces","refresh_token":"r","expires_in":3600}' },
+    ]);
+
+    const jetons = await session['echangerTicket']('ST-1');
+
+    expect(jetons.oauth1.oauth_token).toBe('t1');
+    expect(jetons.oauth2.access_token).toBe('acces');
+    // Deux attentes avant la reussite, croissantes.
+    expect(attentes).toHaveLength(2);
+    expect(attentes[1]).toBeGreaterThan(attentes[0]!);
+  });
+
+  it('respecte l en-tete Retry-After quand Garmin le fournit', async () => {
+    const { session, attentes } = sessionAvec([
+      { statut: 429, retryAfter: '7' },
+      { statut: 200, corps: 'oauth_token=t1&oauth_token_secret=s1' },
+      { statut: 200, corps: '{"access_token":"a","refresh_token":"r","expires_in":3600}' },
+    ]);
+
+    await session['echangerTicket']('ST-1');
+    expect(attentes[0]).toBe(7000);
+  });
+
+  it('plafonne une attente demesuree, qui depasserait la duree de la fonction', async () => {
+    const { session, attentes } = sessionAvec([
+      { statut: 429, retryAfter: '600' },
+      { statut: 200, corps: 'oauth_token=t1&oauth_token_secret=s1' },
+      { statut: 200, corps: '{"access_token":"a","refresh_token":"r","expires_in":3600}' },
+    ]);
+
+    await session['echangerTicket']('ST-1');
+    expect(attentes[0]).toBe(15000);
+  });
+
+  it('explique que ce sont les identifiants qui sont bons, pas eux qui bloquent', async () => {
+    const { session } = sessionAvec([{ statut: 429 }]);
+
+    await expect(session['echangerTicket']('ST-1')).rejects.toThrow(
+      /Tes identifiants sont bons/,
+    );
+  });
+
+  it('ne reessaie pas une erreur definitive : le ticket expirerait pour rien', async () => {
+    const { session, attentes } = sessionAvec([{ statut: 400 }]);
+
+    await expect(session['echangerTicket']('ST-1')).rejects.toThrow(/400/);
+    expect(attentes).toHaveLength(0);
   });
 });
