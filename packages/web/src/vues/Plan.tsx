@@ -264,14 +264,48 @@ function ImportInitial({ onImporte }: { onImporte: () => void }) {
     }
   }
 
+  async function chargerBloc1(): Promise<void> {
+    setOccupe(true);
+    setErreur(null);
+    try {
+      await api.chargerPlanInitial();
+      onImporte();
+    } catch (e) {
+      setErreur(e);
+    } finally {
+      setOccupe(false);
+    }
+  }
+
   return (
     <>
       <h1>Aucun plan charge</h1>
       <ErreurAffichee erreur={erreur} />
+
       <div className="carte">
+        <h2 style={{ marginTop: 0 }}>Demarrer avec le bloc 1</h2>
         <p>
-          Importe un plan au format JSON. Le fichier <code>data/plan-bloc1.json</code> du
-          depot contient le bloc 1 (8 semaines, base aerobie).
+          8 semaines de base aerobie, de 1h40 a 2h40 de course par semaine, avec le
+          renforcement preventif. Le bloc demarre <strong>lundi prochain</strong>.
+        </p>
+        <button
+          type="button"
+          className="principal"
+          disabled={occupe}
+          onClick={() => void chargerBloc1()}
+        >
+          Charger le bloc 1
+        </button>
+        <p className="doux" style={{ marginTop: 10 }}>
+          Tu pourras tout modifier ensuite, et revenir en arriere : chaque revision est
+          conservee dans l'historique.
+        </p>
+      </div>
+
+      <details className="carte">
+        <summary>Ou importer un plan JSON</summary>
+        <p className="doux">
+          Utile pour reprendre un plan existant, ou celui qu'un coach t'a renvoye.
         </p>
         <label>
           <span>Fichier JSON</span>
@@ -285,7 +319,7 @@ function ImportInitial({ onImporte }: { onImporte: () => void }) {
             }}
           />
         </label>
-      </div>
+      </details>
     </>
   );
 }

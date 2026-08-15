@@ -1,11 +1,14 @@
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import {
+  IsoDate,
   PlanSchema,
   aujourdhui,
   seancesPlanifiees,
   validerCoherencePlan,
   volumesParSemaine,
 } from '@carter/shared';
+import { construirePlanInitial, lundiProchain } from '../plan-initial.js';
 import { calculerAlertes } from '../alertes/regles.js';
 import { diffEnMarkdown, diffPlans } from '../export/diff-plan.js';
 import { sauvegarder } from '../db/index.js';
@@ -64,6 +67,42 @@ export function routesPlan(app: FastifyInstance, ctx: Contexte): void {
       diff,
       diff_markdown: diff === null ? null : diffEnMarkdown(diff),
     };
+  });
+
+  /**
+   * Charge le plan de depart (bloc 1) sans passer par un fichier.
+   *
+   * Selectionner un fichier JSON depuis un telephone suppose de l'avoir
+   * d'abord telecharge et range quelque part : trois etapes pour demarrer une
+   * app dont c'est le tout premier ecran. Le plan est construit ici, a partir
+   * du lundi suivant.
+   *
+   * Refuse si un plan existe deja : ce bouton sert a demarrer, pas a ecraser.
+   */
+  app.post('/api/plan/initial', async (requete) => {
+    const existant = await ctx.plans.courant();
+    if (existant !== null) {
+      throw new ErreurHttp(
+        409,
+        `Un plan est deja charge (« ${existant.nom} », version ${existant.version}). ` +
+          'Passe par un import si tu veux le remplacer.',
+      );
+    }
+
+    const Corps = z.object({ date_debut: IsoDate.optional() }).optional();
+    const corps = Corps.parse(requete.body ?? {});
+
+    const plan = construirePlanInitial(corps?.date_debut ?? lundiProchain());
+
+    const incoherences = validerCoherencePlan(plan);
+    if (incoherences.length > 0) {
+      // Ne devrait jamais arriver : le plan est construit par du code teste.
+      throw new ErreurHttp(500, 'Le plan de depart est incoherent', {
+        erreurs: incoherences,
+      });
+    }
+
+    return { plan: await ctx.plans.enregistrer(plan, 'INITIAL', 'bloc 1 par defaut') };
   });
 
   /** Enregistrement d'une edition faite dans l'interface. */

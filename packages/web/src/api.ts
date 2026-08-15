@@ -112,6 +112,9 @@ export const api = {
 
   plan: () => appeler<EtatPlan>('/api/plan'),
 
+  chargerPlanInitial: () =>
+    appeler<{ plan: Plan }>('/api/plan/initial', { method: 'POST', body: '{}' }),
+
   importerPlan: (plan: unknown) =>
     appeler<{ plan: Plan; diff_markdown: string | null }>('/api/plan/import', {
       method: 'POST',
