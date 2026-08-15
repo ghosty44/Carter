@@ -50,12 +50,17 @@ export default async function handler(
     // Echec au demarrage : configuration absente, base injoignable. Repondre
     // en clair vaut mieux qu'une 500 opaque de la plateforme.
     const message = erreur instanceof Error ? erreur.message : String(erreur);
+
+    // Trace complete cote plateforme : c'est la seule facon de diagnostiquer
+    // une panne de demarrage depuis les journaux Vercel.
+    console.error('[carter] demarrage impossible', erreur);
+
     reponse.statusCode = 500;
     reponse.setHeader('Content-Type', 'application/json; charset=utf-8');
     reponse.end(
       JSON.stringify({
         erreur: "Le serveur n'a pas pu demarrer",
-        details: message,
+        details: { erreurs: message.split('\n').filter((l) => l.trim() !== '') },
       }),
     );
   }

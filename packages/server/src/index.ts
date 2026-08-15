@@ -1,6 +1,8 @@
-import { config } from './config.js';
+import { chargerConfig } from './config.js';
 import { construireApp } from './app.js';
 import { fermerBase } from './db/index.js';
+
+const config = chargerConfig();
 
 /**
  * Serveur long-vivant : developpement local, ou hebergement classique.

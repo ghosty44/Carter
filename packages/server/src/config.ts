@@ -62,7 +62,18 @@ const Schema = z.object({
 
 export type Config = z.infer<typeof Schema> & { productionSansProtection: boolean };
 
-function construire(): Config {
+/**
+ * Charge et valide la configuration.
+ *
+ * Volontairement une fonction, et non une constante evaluee a l'import.
+ *
+ * En serverless, une exception levee pendant l'evaluation d'un module fait
+ * echouer le chargement de la fonction entiere : la plateforme renvoie un 500
+ * opaque, et aucun des messages ci-dessous n'atteint jamais l'utilisateur —
+ * precisement au moment ou ils sont utiles. Appelee depuis `construireApp()`,
+ * l'erreur remonte dans le gestionnaire du handler, qui la renvoie en clair.
+ */
+export function chargerConfig(): Config {
   const parse = Schema.safeParse(process.env);
   if (!parse.success) {
     const details = parse.error.issues
@@ -104,8 +115,6 @@ function construire(): Config {
   return { ...c, productionSansProtection: protectionManquante };
 }
 
-export const config = construire();
-
-export function intervalsConfigure(c: Config = config): boolean {
+export function intervalsConfigure(c: Config): boolean {
   return c.INTERVALS_ATHLETE_ID.length > 0 && c.INTERVALS_API_KEY.length > 0;
 }

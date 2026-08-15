@@ -46,9 +46,23 @@ async function appeler<T>(chemin: string, init: RequestInit = {}): Promise<T> {
   const corps = texte === '' ? null : safeJson(texte);
 
   if (!reponse.ok) {
+    const structure = corps as { erreur?: string; details?: unknown } | null;
+
+    // Une reponse sans champ `erreur` ne vient pas de l'app : c'est la
+    // plateforme d'hebergement qui a renvoye une page d'erreur. Le dire
+    // explicitement evite de chercher un bug applicatif qui n'existe pas.
     const message =
-      (corps as { erreur?: string } | null)?.erreur ?? `Erreur ${reponse.status}`;
-    throw new ErreurApi(reponse.status, message, (corps as { details?: unknown })?.details);
+      structure?.erreur ??
+      `Erreur ${reponse.status} renvoyee par l'hebergeur, pas par l'app. ` +
+        'Regarde les journaux du deploiement : la fonction a probablement echoue au demarrage.';
+
+    const details =
+      structure?.details ??
+      (typeof corps === 'string' && corps.trim() !== ''
+        ? { erreurs: [corps.slice(0, 300)] }
+        : null);
+
+    throw new ErreurApi(reponse.status, message, details);
   }
 
   return corps as T;

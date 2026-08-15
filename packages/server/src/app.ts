@@ -4,7 +4,7 @@ import cookie from '@fastify/cookie';
 import statique from '@fastify/static';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
-import { config as configParDefaut, type Config } from './config.js';
+import { chargerConfig, type Config } from './config.js';
 import { enregistrerAuth } from './auth.js';
 import { migrer, ouvrirBase } from './db/index.js';
 import {
@@ -39,7 +39,7 @@ export interface OptionsApp {
  * ici ne suppose l'un ou l'autre.
  */
 export async function construireApp(options: OptionsApp = {}): Promise<FastifyInstance> {
-  const config = options.config ?? configParDefaut;
+  const config = options.config ?? chargerConfig();
 
   const db = ouvrirBase(config.DATABASE_URL!);
   await migrer(db);
